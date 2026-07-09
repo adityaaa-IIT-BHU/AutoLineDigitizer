@@ -4,7 +4,7 @@ LineFormer Desktop App
 Chart line data extraction using LineFormer with Flet UI.
 
 Features:
-- LineFormer inference + color-aware refinement
+- LineFormer inference
 - ChartDete axis detection + OCR
 - VLM verification (Claude)
 - Manual editing: click-to-select line, Erase, Add (spline), Delete Line
@@ -19,7 +19,9 @@ APP_VERSION = "dev"
 if getattr(sys, 'frozen', False):
     SCRIPT_DIR = sys._MEIPASS
 else:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    # desktop_app.py lives in src/, but all the data paths below (models/,
+    # submodules/, config/, templates) sit at the project root one level up.
+    SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 CHARTDETE_DIR = os.path.join(SCRIPT_DIR, "submodules", "chartdete")
 LINEFORMER_DIR = os.path.join(SCRIPT_DIR, "submodules", "lineformer")
@@ -54,7 +56,6 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from color_line_extractor import ColorLineExtractor
 from smart_axis_extractor import SmartAxisExtractor
 
 try:
@@ -132,6 +133,7 @@ LINEFORMER_MODELS = {
     "general": {"name": "General", "checkpoint": "iter_3000.pth"},
     "battery_finetuned": {"name": "Battery (fine-tuned)", "checkpoint": "lineformer_battery_finetuned.pth"},
     "general_v2": {"name": "General (multi-category)", "checkpoint": "lineformer_general.pth"},
+    "general_200k": {"name": "General (200k, iter_9500)", "checkpoint": "lf_200k_iter9500.pth"},
     "battery_realistic": {"name": "Battery (realistic)", "checkpoint": "lineformer_battery_realistic.pth"},
     "battery_iter5000": {
         "name": "Battery (iter_5000)",
@@ -247,7 +249,6 @@ class LineFormerApp:
         self.fixed_step = 10
         self.max_points = 20
         self.auto_axis = True
-        self.use_color_refinement = True
         self.smart_axis = SmartAxisExtractor()
 
         # Manual editing state
@@ -580,19 +581,7 @@ class LineFormerApp:
             if len(line) == 0:
                 continue
             raw_from_model.append([[int(pt['x']), int(pt['y'])] for pt in line])
-        if self.use_color_refinement and raw_from_model:
-            try:
-                plot_box = self.cached_plot_area
-                if plot_box is None:
-                    plot_box = self._detect_plot_area_only(img)
-                extractor = ColorLineExtractor(img, plot_area=plot_box)
-                refined, _ = extractor.refine_lines(raw_from_model)
-                self.raw_lines = refined if refined else raw_from_model
-            except Exception as e:
-                print(f"Color refinement skipped ({e}); using raw LineFormer output.")
-                self.raw_lines = raw_from_model
-        else:
-            self.raw_lines = raw_from_model
+        self.raw_lines = raw_from_model
         return self.apply_downsample_and_sort()
 
     def apply_downsample_and_sort(self):
@@ -1159,11 +1148,6 @@ def main(page: ft.Page):
     fixed_step_label = ft.Text("Step: 10", size=12, visible=False)
     fixed_step_slider = ft.Slider(min=1, max=50, value=10, divisions=49, label="{value}", width=200, visible=False)
 
-    color_refine_checkbox = ft.Checkbox(
-        label="Color refinement", value=True,
-        tooltip="Re-trace each line by its color. Resolves crossings.",
-    )
-
     detected_lines_title = ft.Text("Detected Lines", size=14, weight=ft.FontWeight.BOLD, visible=False)
     detected_lines_hint = ft.Text("Click a line to edit it", size=11, color=ft.colors.GREY_600, visible=False)
     detected_lines_column = ft.Column(spacing=2, tight=True)
@@ -1557,12 +1541,6 @@ def main(page: ft.Page):
         page.update()
         reprocess_lines()
 
-    def on_color_refine_change(e):
-        app.use_color_refinement = color_refine_checkbox.value
-        app.raw_lines = None
-        if app.current_image is not None and app.infer_module is not None:
-            page.run_thread(lambda: process_image(skip_axis=app.axis_config is not None))
-
     def on_axis_name_change(e):
         app.x_axis_name = (x_axis_name_field.value or "").strip()
         app.y_axis_name = (y_axis_name_field.value or "").strip()
@@ -1622,8 +1600,6 @@ def main(page: ft.Page):
     downsample_dropdown.on_change = on_downsample_change
     max_points_slider.on_change = on_max_points_change
     fixed_step_slider.on_change = on_fixed_step_change
-    color_refine_checkbox.on_change = on_color_refine_change
-
     export_sd_btn = None
     export_wpd_btn = None
     verify_btn = None
@@ -2070,7 +2046,8 @@ def main(page: ft.Page):
             process_status_text.value = "Open a PDF first (KMDS runs on the whole PDF)."
             page.update()
             return
-        prompt_path = os.path.join(SCRIPT_DIR, "extraction_prompt.md")
+        # extraction_prompt.md lives next to this module (src/), not at the project root.
+        prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "extraction_prompt.md")
         if not os.path.exists(prompt_path):
             process_status_text.value = "extraction_prompt.md not found; cannot run KMDS."
             page.update()
@@ -2778,7 +2755,6 @@ def main(page: ft.Page):
             _section_label("Models"),
             model_dropdown,
             ft.Row([progress_ring, status_text], spacing=5),
-            color_refine_checkbox,
             axis_model_dropdown,
             axis_status_text,
             sort_dropdown,

@@ -161,15 +161,13 @@ def extract_kmds_via_claude(pdf_path: str,
 
 def extract_charts(figure_entries: List,
                     output_dir: str,
-                    lf_model: str = "general_v2",
-                    use_color_refinement: bool = False) -> List[Dict[str, Any]]:
+                    lf_model: str = "general_v2") -> List[Dict[str, Any]]:
     """Run LineFormer on every figure crop, saving raw traces only.
 
     Args:
         figure_entries: list of FigureEntry objects from pdf_processor
         output_dir: where to save per-figure outputs
         lf_model: LineFormer model key (e.g. 'general_v2', 'battery_finetuned')
-        use_color_refinement: pass to LineFormerApp (default False — your ablation showed better without)
 
     Returns:
         list of per-figure result dicts (with path to lines.json)
@@ -183,7 +181,6 @@ def extract_charts(figure_entries: List,
         return []
 
     app = LineFormerApp()
-    app.use_color_refinement = use_color_refinement
     try:
         app.load_lineformer_model(lf_model)
     except Exception as e:
@@ -223,7 +220,6 @@ def extract_charts(figure_entries: List,
                 "source_image": img_path,
                 "n_curves": n_curves,
                 "lf_model": lf_model,
-                "use_color_refinement": use_color_refinement,
                 "raw_lines": [
                     [[int(p[0]), int(p[1])] for p in curve]
                     for curve in raw_lines

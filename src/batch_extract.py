@@ -3,7 +3,7 @@
 batch_extract.py — Cross-paper batch chart extraction.
 
 Takes a folder of PDFs, finds figures in each, runs the AutoLineDigitizer
-pipeline (LineFormer + ChartDete axis detection + color refinement), and
+pipeline (LineFormer + ChartDete axis detection), and
 writes axis-calibrated data plus full provenance.
 
 Output layout:
@@ -181,7 +181,7 @@ def process_figure(app, img_bgr, fig_meta, out_dir, fig_basename, args, screener
             result["x_axis_name"] = x_name
             result["y_axis_name"] = y_name
 
-        # 2) Line extraction (+ color refinement, uses cached plot area).
+        # 2) Line extraction.
         app.data_series = app.extract_lines(img_bgr)
         if not app.data_series:
             result["error"] = "no lines detected"
@@ -263,9 +263,6 @@ def main():
     parser.add_argument("--page-vlm-model", default=None,
                         help="Override Anthropic model for page-level bbox detection. "
                              "Defaults to --vlm-model. Sonnet may give more accurate bboxes.")
-    parser.add_argument("--no-color-refinement", action="store_true",
-                        help="Disable color-based line refinement; use raw LineFormer output only "
-                             "(ablation switch).")
     parser.add_argument("--min-size", type=int, default=200,
                         help="Minimum figure width/height in pixels (default 200)")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
@@ -308,9 +305,6 @@ def main():
                 sys.exit(1)
 
     app = LineFormerApp()
-    if args.no_color_refinement:
-        app.use_color_refinement = False
-        print("  color refinement DISABLED (--no-color-refinement)")
     print(f"  loading LineFormer ({args.model}) ...")
     try:
         app.load_lineformer_model(args.model)
