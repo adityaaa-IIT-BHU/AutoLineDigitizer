@@ -42,8 +42,14 @@ a = Analysis(
         # KMDS prompt + schema (loaded at runtime relative to SCRIPT_DIR/_MEIPASS)
         ('src/extraction_prompt.md', '.'),
         ('src/kmds_v15.2.4_nullable.json', '.'),
+        # Paper-record HTML viewer template
+        ('kmds_paper_viewer_claude.html', '.'),
         # EasyOCR models (bundled for offline use)
         (os.path.join(spec_dir, 'easyocr_models'), 'easyocr_models'),
+        # MinerU PP-DocLayoutV2 weights (default PDF figure detector).
+        # CI downloads these before building (see release.yml); a missing dir
+        # fails the build loudly rather than shipping without the detector.
+        (os.path.join(spec_dir, 'pp_doclayoutv2_weights'), 'pp_doclayoutv2_weights'),
     ],
     hiddenimports=[
         'mmdet',
@@ -62,7 +68,8 @@ a = Analysis(
         'terminaltables',
         'matplotlib',
         'pycocotools',
-    ] + distutils_imports + mmcv_imports,
+        'kmds_editor',
+    ] + distutils_imports + mmcv_imports + collect_submodules('mineru_layout'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

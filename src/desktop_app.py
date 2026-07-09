@@ -1088,23 +1088,36 @@ def main(page: ft.Page):
 
     # KMDS results render INLINE (not a dialog) — updating inline controls from
     # a worker thread is the pattern that already works elsewhere in this app.
-    kmds_paths = {"en": None, "ja": None, "dir": None}
+    kmds_paths = {"en": None, "ja": None, "dir": None, "current": None}
     kmds_title = ft.Text("KMDS metadata", size=16, weight=ft.FontWeight.BOLD)
     kmds_summary_text = ft.Text("", size=12, selectable=True)
     kmds_en_btn = ft.TextButton("English")
     kmds_ja_btn = ft.TextButton("日本語")
     kmds_openfolder_btn = ft.TextButton("Open folder", icon=ft.icons.FOLDER_OPEN)
     kmds_close_btn = ft.TextButton("Hide", icon=ft.icons.CLOSE)
+    kmds_save_btn = ft.FilledTonalButton("Save edits", icon=ft.icons.SAVE, disabled=True)
+    kmds_download_btn = ft.OutlinedButton("Download JSON…", icon=ft.icons.DOWNLOAD,
+                                          disabled=True)
+    kmds_edit_status = ft.Text("", size=12, color=ft.colors.GREY_700, selectable=True)
     kmds_json_view = ft.TextField(
         value="", read_only=True, multiline=True, min_lines=16, max_lines=22,
         text_size=11,
     )
+    # Field-level editor: one text field per scalar leaf of the record,
+    # grouped under collapsible top-level sections (metadata, system, ...).
+    kmds_fields_list = ft.ListView(spacing=4, height=440, padding=4)
+    kmds_editor_state = {"record": None, "rows": []}   # rows: (path, original, TextField)
+    kmds_tabs = ft.Tabs(tabs=[
+        ft.Tab(text="Fields", content=ft.Container(kmds_fields_list, padding=4)),
+        ft.Tab(text="Raw JSON", content=ft.Container(kmds_json_view, padding=4)),
+    ], height=500)
     kmds_panel = ft.Container(
         content=ft.Column([
             ft.Row([kmds_title, ft.Container(expand=True),
                     kmds_en_btn, kmds_ja_btn, kmds_openfolder_btn, kmds_close_btn]),
             kmds_summary_text,
-            kmds_json_view,
+            ft.Row([kmds_save_btn, kmds_download_btn, kmds_edit_status]),
+            kmds_tabs,
         ], spacing=6),
         visible=False, padding=14,
         border=ft.border.all(1, RULE), border_radius=14,
@@ -1996,13 +2009,109 @@ def main(page: ft.Page):
     recrop_btn.on_click = on_recrop_click
 
     # ---- KMDS metadata extraction (whole PDF -> EN + JA structured JSON) ----
+    def _kmds_build_editor(record):
+        """Populate the Fields tab: one TextField per scalar leaf, grouped
+        under top-level section headers."""
+        from kmds_editor import flatten_record, leaf_to_text
+        kmds_fields_list.controls.clear()
+        kmds_editor_state["rows"] = []
+        if not isinstance(record, dict):
+            kmds_fields_list.controls.append(
+                ft.Text("(record is not a JSON object — use Raw JSON tab)", size=12))
+            return
+        section = None
+        for path, label, value in flatten_record(record):
+            if path[0] != section:
+                section = path[0]
+                kmds_fields_list.controls.append(ft.Container(
+                    ft.Text(str(section), size=13, weight=ft.FontWeight.BOLD),
+                    padding=ft.padding.only(top=10)))
+            tf = ft.TextField(
+                value=leaf_to_text(value), label=label, dense=True,
+                text_size=12, multiline=True, max_lines=3,
+            )
+            kmds_editor_state["rows"].append((path, value, tf))
+            kmds_fields_list.controls.append(tf)
+
     def _kmds_load_json(path, fallback):
+        kmds_paths["current"] = path
+        kmds_edit_status.value = ""
         try:
             with open(path, "r", encoding="utf-8") as f:
                 kmds_json_view.value = f.read()
+            kmds_editor_state["record"] = json.loads(kmds_json_view.value)
         except Exception:
             kmds_json_view.value = fallback
+            kmds_editor_state["record"] = None
+        _kmds_build_editor(kmds_editor_state["record"])
+        has_record = kmds_editor_state["record"] is not None
+        kmds_save_btn.disabled = not has_record
+        kmds_download_btn.disabled = not has_record
         page.update()
+
+    def _kmds_collect_edits():
+        """Apply the field edits into the record. Returns error list."""
+        from kmds_editor import apply_text_edits
+        record = kmds_editor_state["record"]
+        if record is None:
+            return ["no record loaded"]
+        rows = [(path, original, tf.value if tf.value is not None else "")
+                for path, original, tf in kmds_editor_state["rows"]]
+        return apply_text_edits(record, rows)
+
+    def _kmds_refresh_after_apply():
+        """Sync raw view + in-memory record used by the HTML record viewer."""
+        record = kmds_editor_state["record"]
+        kmds_json_view.value = json.dumps(record, indent=2, ensure_ascii=False)
+        if kmds_paths["current"] == kmds_paths["en"]:
+            app.kmds_record = record
+
+    def _on_kmds_save(_):
+        errors = _kmds_collect_edits()
+        record = kmds_editor_state["record"]
+        path = kmds_paths["current"]
+        if record is None or not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(record, f, indent=2, ensure_ascii=False)
+            _kmds_refresh_after_apply()
+            kmds_edit_status.value = (
+                f"Saved to {os.path.basename(path)}"
+                + (f" — {len(errors)} field(s) skipped: {errors[0]}" if errors else ""))
+        except Exception as ex:
+            kmds_edit_status.value = f"Save failed: {ex}"
+        page.update()
+
+    def _kmds_download_result(e: ft.FilePickerResultEvent):
+        if not e.path:
+            return
+        errors = _kmds_collect_edits()
+        record = kmds_editor_state["record"]
+        if record is None:
+            return
+        try:
+            with open(e.path, "w", encoding="utf-8") as f:
+                json.dump(record, f, indent=2, ensure_ascii=False)
+            _kmds_refresh_after_apply()
+            kmds_edit_status.value = (
+                f"Downloaded to {e.path}"
+                + (f" — {len(errors)} field(s) skipped: {errors[0]}" if errors else ""))
+        except Exception as ex:
+            kmds_edit_status.value = f"Download failed: {ex}"
+        page.update()
+
+    kmds_download_picker = ft.FilePicker(on_result=_kmds_download_result)
+
+    def _on_kmds_download(_):
+        if kmds_editor_state["record"] is None:
+            return
+        base = os.path.basename(kmds_paths["current"] or "kmds_record.json")
+        kmds_download_picker.save_file(
+            file_name=base, allowed_extensions=["json"])
+
+    kmds_save_btn.on_click = _on_kmds_save
+    kmds_download_btn.on_click = _on_kmds_download
 
     def _on_kmds_show_en(_):
         if kmds_paths["en"]:
@@ -2420,7 +2529,8 @@ def main(page: ft.Page):
                 page.run_thread(load_imported)
 
     model_import_picker = ft.FilePicker(on_result=import_model_result)
-    page.overlay.extend([save_sd_picker, save_wpd_picker, save_csv_picker, model_import_picker])
+    page.overlay.extend([save_sd_picker, save_wpd_picker, save_csv_picker,
+                         model_import_picker, kmds_download_picker])
 
     def on_model_change(e):
         key = model_dropdown.value

@@ -44,7 +44,20 @@ jobs:
           pip install numpy Pillow
           CC=clang CXX=clang++ CFLAGS='-stdlib=libc++' MMCV_WITH_OPS=1 pip install mmcv-full==1.7.2 --no-build-isolation
           pip install opencv-python-headless scipy scikit-image bresenham easyocr terminaltables matplotlib pycocotools
-          pip install pymupdf anthropic
+          pip install pymupdf anthropic huggingface_hub
+
+      - name: Cache PP-DocLayoutV2 weights
+        uses: actions/cache@v4
+        with:
+          path: pp_doclayoutv2_weights
+          key: pp-doclayoutv2-weights-v1
+
+      - name: Download PP-DocLayoutV2 weights (MinerU figure detector)
+        run: |
+          if [ ! -f pp_doclayoutv2_weights/models/Layout/PP-DocLayoutV2/model.safetensors ]; then
+            python src/mineru_layout/download_weights.py pp_doclayoutv2_weights
+          fi
+          ls -la pp_doclayoutv2_weights/models/Layout/PP-DocLayoutV2/
 
       - name: Download EasyOCR models
         run: |
@@ -114,9 +127,22 @@ jobs:
           pip install numpy Pillow
           pip install mmcv-full==1.7.2 --no-build-isolation
           pip install opencv-python-headless scipy scikit-image bresenham easyocr terminaltables matplotlib pycocotools
-          pip install pymupdf anthropic
+          pip install pymupdf anthropic huggingface_hub
         env:
           MMCV_WITH_OPS: '1'
+
+      - name: Cache PP-DocLayoutV2 weights
+        uses: actions/cache@v4
+        with:
+          path: pp_doclayoutv2_weights
+          key: pp-doclayoutv2-weights-v1
+
+      - name: Download PP-DocLayoutV2 weights (MinerU figure detector)
+        run: |
+          if (-not (Test-Path "pp_doclayoutv2_weights/models/Layout/PP-DocLayoutV2/model.safetensors")) {
+            python src/mineru_layout/download_weights.py pp_doclayoutv2_weights
+          }
+          Get-ChildItem pp_doclayoutv2_weights/models/Layout/PP-DocLayoutV2/
 
       - name: Download EasyOCR models
         run: |
