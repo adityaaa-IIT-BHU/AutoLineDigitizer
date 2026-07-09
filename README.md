@@ -32,7 +32,7 @@ https://github.com/user-attachments/assets/7ecb641e-f939-40a5-ad7b-54b64937fdd4
 
 ## Download
 
-Download the latest version from the [Releases](https://github.com/t29mato/AutoLineDigitizer/releases) page.
+Download the latest version from the [Releases](https://github.com/adityaaa-IIT-BHU/AutoLineDigitizer/releases) page.
 
 | Platform | File |
 |----------|------|
