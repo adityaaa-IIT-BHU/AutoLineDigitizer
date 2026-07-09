@@ -57,6 +57,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from smart_axis_extractor import SmartAxisExtractor
+from app_settings import load_saved_api_key, save_api_key
+
+# Activate a previously-saved Anthropic key (env var wins) before any of the
+# VLM/KMDS components check for one.
+load_saved_api_key()
 
 try:
     from vlm_verifier import VLMVerifier, ANTHROPIC_AVAILABLE
@@ -1006,6 +1011,20 @@ def main(page: ft.Page):
     input_image = ft.Image(visible=False, width=CANVAS_W, fit=ft.ImageFit.FIT_WIDTH)
     result_image = ft.Image(visible=False, width=CANVAS_W, fit=ft.ImageFit.FIT_WIDTH)
 
+    # Magnifier loupe shown while an edit tool (Erase / Add) is active: a
+    # zoomed crop around the cursor with a crosshair (+ eraser outline).
+    LOUPE_SIZE = 150      # on-screen diameter, px
+    LOUPE_ZOOM = 3.0      # magnification relative to the displayed canvas
+    loupe_image = ft.Image(width=LOUPE_SIZE, height=LOUPE_SIZE,
+                           fit=ft.ImageFit.FILL)
+    loupe_box = ft.Container(
+        content=loupe_image, width=LOUPE_SIZE, height=LOUPE_SIZE,
+        visible=False, left=0, top=0,
+        border=ft.border.all(2, ft.colors.BLUE_GREY_400),
+        border_radius=LOUPE_SIZE // 2,
+        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+    )
+
     # ---- PDF figure gallery (populated when a PDF is opened) ----
     THUMB_W = 150
     pdf_gallery_title = ft.Text("", size=13, weight=ft.FontWeight.BOLD)
@@ -1230,6 +1249,7 @@ def main(page: ft.Page):
             return
         img = app.draw_points_on_image(app.current_image, app.data_series, app.axis_config,
                                        highlight_line_idx=highlight_idx)
+        app.result_image = img          # loupe reads the rendered frame
         result_image.src_base64 = image_to_base64(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         page.update()
 
@@ -1246,6 +1266,7 @@ def main(page: ft.Page):
                 preview = app.spline_interpolate(app.add_anchors)
                 for j in range(len(preview) - 1):
                     cv2.line(img, tuple(preview[j]), tuple(preview[j + 1]), (0, 0, 255), 2)
+        app.result_image = img          # loupe reads the rendered frame
         result_image.src_base64 = image_to_base64(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         result_image.visible = True
         page.update()
@@ -1355,6 +1376,8 @@ def main(page: ft.Page):
         app.edit_mode = mode
         app.add_anchors = []
         _hide_edit_subcontrols()
+        if mode is None:
+            loupe_box.visible = False
         if mode == "erase":
             eraser_label.visible = True
             eraser_slider.visible = True
@@ -1576,6 +1599,62 @@ def main(page: ft.Page):
         scale = ow / float(CANVAS_W)
         return local_x * scale, local_y * scale
 
+    _loupe_throttle = {"t": 0.0}
+
+    def _hide_loupe(update=True):
+        if loupe_box.visible:
+            loupe_box.visible = False
+            if update:
+                page.update()
+
+    def _update_loupe(lx, ly):
+        """Refresh the magnifier crop + position for cursor at display
+        coords (lx, ly). Active only while an edit tool is selected."""
+        frame = getattr(app, "result_image", None)
+        if (frame is None or app.current_image is None
+                or app.edit_mode is None or app.selected_line_idx is None):
+            _hide_loupe()
+            return
+        import time as _t
+        now = _t.time()
+        if now - _loupe_throttle["t"] < 0.03:      # ~30 fps cap
+            return
+        _loupe_throttle["t"] = now
+
+        oh, ow = frame.shape[:2]
+        scale = ow / float(CANVAS_W)               # display px -> image px
+        cx, cy = int(lx * scale), int(ly * scale)
+        # image-px radius that fills the loupe at the requested zoom
+        src_r = max(4, int(LOUPE_SIZE * scale / (2.0 * LOUPE_ZOOM)))
+        x0, y0 = cx - src_r, cy - src_r
+        crop = np.full((2 * src_r, 2 * src_r, 3), 255, np.uint8)
+        sx0, sy0 = max(0, x0), max(0, y0)
+        sx1, sy1 = min(ow, cx + src_r), min(oh, cy + src_r)
+        if sx1 > sx0 and sy1 > sy0:
+            crop[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = frame[sy0:sy1, sx0:sx1]
+        vis = cv2.resize(crop, (LOUPE_SIZE, LOUPE_SIZE),
+                         interpolation=cv2.INTER_NEAREST)
+        c = LOUPE_SIZE // 2
+        cv2.line(vis, (c - 12, c), (c + 12, c), (40, 40, 40), 1)
+        cv2.line(vis, (c, c - 12), (c, c + 12), (40, 40, 40), 1)
+        if app.edit_mode == "erase":
+            r_loupe = int(app.eraser_radius * LOUPE_SIZE / (2.0 * src_r))
+            if 2 <= r_loupe <= LOUPE_SIZE:
+                cv2.circle(vis, (c, c), r_loupe, (0, 0, 255), 1)
+        loupe_image.src_base64 = image_to_base64(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB))
+
+        # place the loupe up-right of the cursor, flipping near canvas edges
+        left = lx + 24
+        if left + LOUPE_SIZE > CANVAS_W:
+            left = lx - LOUPE_SIZE - 24
+        top = ly - LOUPE_SIZE - 24
+        if top < 0:
+            top = ly + 24
+        loupe_box.left = max(0, left)
+        loupe_box.top = max(0, top)
+        loupe_box.visible = True
+        page.update()
+
     def on_canvas_tap(e):
         if app.selected_line_idx is None or app.edit_mode is None:
             return
@@ -1593,6 +1672,7 @@ def main(page: ft.Page):
         elif app.edit_mode == "add":
             app.add_anchors.append([px, py])
             redraw_canvas()
+        _update_loupe(lx, ly)
 
     def on_canvas_pan(e):
         if app.selected_line_idx is None or app.edit_mode != "erase":
@@ -1608,6 +1688,16 @@ def main(page: ft.Page):
         removed = app.erase_near(app.selected_line_idx, px, py, app.eraser_radius)
         if removed:
             redraw_canvas()
+        _update_loupe(lx, ly)
+
+    def on_canvas_hover(e):
+        try:
+            _update_loupe(e.local_x, e.local_y)
+        except Exception:
+            pass
+
+    def on_canvas_exit(e):
+        _hide_loupe()
 
     sort_dropdown.on_change = on_sort_change
     downsample_dropdown.on_change = on_downsample_change
@@ -2860,6 +2950,41 @@ def main(page: ft.Page):
 
     detect_markers_btn.on_click = on_detect_markers_click
 
+    # ---- Claude API key (shared lab key: paste once, stored per-user) ----
+    api_key_field = ft.TextField(
+        label="Claude API key", password=True, can_reveal_password=True,
+        width=200, dense=True, hint_text="sk-ant-…",
+    )
+    api_key_status = ft.Text(
+        "Key active" if os.environ.get("ANTHROPIC_API_KEY") else "No key set",
+        size=11,
+        color=ft.colors.GREEN_700 if os.environ.get("ANTHROPIC_API_KEY")
+        else ft.colors.GREY_600,
+    )
+    api_key_save_btn = ft.OutlinedButton("Save key")
+
+    def on_save_api_key(_):
+        key = (api_key_field.value or "").strip()
+        try:
+            save_api_key(key)
+        except Exception as ex:
+            api_key_status.value = f"Save failed: {ex}"
+            page.update()
+            return
+        api_key_field.value = ""      # never echo the key back
+        if key:
+            api_key_status.value = "Key active"
+            api_key_status.color = ft.colors.GREEN_700
+        else:
+            active = bool(os.environ.get("ANTHROPIC_API_KEY"))
+            api_key_status.value = ("Saved key cleared (env key still active)"
+                                    if active else "No key set")
+            api_key_status.color = (ft.colors.GREEN_700 if active
+                                    else ft.colors.GREY_600)
+        page.update()
+
+    api_key_save_btn.on_click = on_save_api_key
+
     settings_panel = ft.Container(
         content=ft.Column([
             _section_label("Models"),
@@ -2868,6 +2993,10 @@ def main(page: ft.Page):
             axis_model_dropdown,
             axis_status_text,
             sort_dropdown,
+            _soft_divider(),
+            _section_label("Claude API"),
+            api_key_field,
+            ft.Row([api_key_save_btn, api_key_status], spacing=8),
             _soft_divider(),
             _section_label("Sampling"),
             downsample_dropdown,
@@ -2908,8 +3037,12 @@ def main(page: ft.Page):
         content=result_image,
         on_tap_down=on_canvas_tap,
         on_pan_update=on_canvas_pan,
+        on_hover=on_canvas_hover,
+        on_exit=on_canvas_exit,
+        hover_interval=30,
         mouse_cursor=ft.MouseCursor.PRECISE,
     )
+    result_stack = ft.Stack([result_canvas, loupe_box])
 
     def _card(content, pad=14):
         return ft.Container(content=content, padding=pad, bgcolor=SURFACE,
@@ -2947,7 +3080,7 @@ def main(page: ft.Page):
         # renders at exactly CANVAS_W, so the columns must NOT be squeezed.
         ft.Row([
             _img_card("Input image", input_image),
-            _img_card("Extracted points", result_canvas),
+            _img_card("Extracted points", result_stack),
         ], vertical_alignment=ft.CrossAxisAlignment.START,
            scroll=ft.ScrollMode.AUTO, spacing=12),
         info_text,

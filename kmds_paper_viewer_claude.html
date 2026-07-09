@@ -1,0 +1,1736 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>KMDS Paper Record Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,800;1,9..144,400;1,9..144,500&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #1a1814;
+  --ink-2: #3a3530;
+  --ink-3: #6b6258;
+  --paper: #f6f1e7;
+  --paper-2: #ede5d3;
+  --paper-3: #e2d8c1;
+  --rule: #c9bfa8;
+  --accent: #b53826;
+  --accent-2: #1b4d3e;
+  --accent-3: #c89211;
+  --hilite: #f9e58a;
+  --shadow: 0 1px 0 rgba(26,24,20,0.08), 0 12px 28px -16px rgba(26,24,20,0.18);
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Inter Tight", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 999;
+  opacity: 0.5;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.06 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  mix-blend-mode: multiply;
+}
+
+/* ==================  WELCOME / DROPZONE  ================== */
+.welcome {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 32px;
+  position: relative;
+}
+.welcome.hidden { display: none; }
+.welcome .brand {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  margin-bottom: 18px;
+}
+.welcome .brand .dot {
+  color: var(--accent);
+  font-size: 16px;
+  vertical-align: middle;
+}
+.welcome h1 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(40px, 6vw, 76px);
+  line-height: 1.0;
+  letter-spacing: -0.025em;
+  text-align: center;
+  margin: 0 0 12px;
+  max-width: 14ch;
+  font-variation-settings: "opsz" 120;
+}
+.welcome h1 em {
+  font-style: italic;
+  color: var(--accent);
+  font-weight: 400;
+}
+.welcome .sub {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 18px;
+  color: var(--ink-2);
+  margin-bottom: 48px;
+  max-width: 56ch;
+  text-align: center;
+  font-variation-settings: "opsz" 18;
+}
+
+.dropzone {
+  width: min(640px, 100%);
+  min-height: 260px;
+  border: 2px dashed var(--rule);
+  background: var(--paper);
+  padding: 40px 32px;
+  text-align: center;
+  position: relative;
+  transition: all 0.2s;
+  cursor: pointer;
+}
+.dropzone:hover, .dropzone.dragover {
+  border-color: var(--accent);
+  background: var(--paper-2);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+.dropzone .icon {
+  font-family: var(--font-display);
+  font-size: 56px;
+  color: var(--accent);
+  line-height: 1;
+  margin-bottom: 14px;
+  font-style: italic;
+}
+.dropzone .label {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 500;
+  margin-bottom: 8px;
+  font-variation-settings: "opsz" 24;
+}
+.dropzone .or {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--ink-3);
+  margin: 14px 0;
+  font-size: 14px;
+}
+.dropzone button {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  padding: 12px 28px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: all 0.15s;
+}
+.dropzone button:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.dropzone .hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: 22px;
+  letter-spacing: 0.06em;
+}
+
+.welcome .footer {
+  position: absolute;
+  bottom: 24px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--ink-3);
+}
+.welcome .error {
+  margin-top: 18px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+  background: rgba(181,56,38,0.08);
+  border: 1px solid var(--accent);
+  padding: 12px 18px;
+  max-width: 640px;
+  display: none;
+}
+.welcome .error.show { display: block; }
+
+/* ==================  VIEWER  ================== */
+.viewer { display: none; }
+.viewer.show { display: block; }
+
+/* ==================  MASTHEAD  ================== */
+.masthead {
+  border-bottom: 3px double var(--ink);
+  padding: 28px 48px 18px;
+  position: relative;
+}
+.masthead .row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+.masthead .tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.masthead .tag .dot { color: var(--accent); font-size: 18px; line-height: 0; vertical-align: middle; }
+.masthead .title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(26px, 3.6vw, 44px);
+  line-height: 1.08;
+  letter-spacing: -0.015em;
+  margin: 18px 0 10px;
+  font-variation-settings: "opsz" 96;
+  max-width: 1100px;
+}
+.masthead .byline {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-style: italic;
+  color: var(--ink-2);
+  margin-top: 8px;
+  font-variation-settings: "opsz" 14;
+}
+.masthead .meta-line {
+  display: flex;
+  gap: 24px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.masthead .meta-line strong { color: var(--ink); font-weight: 600; }
+.masthead .change-btn {
+  position: absolute;
+  top: 28px;
+  right: 48px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  padding: 7px 14px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-3);
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: all 0.15s;
+}
+.masthead .change-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ==================  TABS  ================== */
+.tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 48px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.tab {
+  padding: 16px 22px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  cursor: pointer;
+  border: none;
+  background: none;
+  border-bottom: 2px solid transparent;
+  transition: color 0.18s, border-color 0.18s;
+  white-space: nowrap;
+  font-variation-settings: "opsz" 14;
+}
+.tab:hover { color: var(--ink); }
+.tab.active { color: var(--ink); border-bottom-color: var(--accent); }
+.tab.empty { opacity: 0.3; pointer-events: none; }
+.tab .count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  margin-left: 6px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.tab.active .count { color: var(--accent); }
+
+/* ==================  PANELS  ================== */
+.panel { display: none; padding: 36px 48px 80px; animation: fadeIn 0.35s ease; }
+.panel.active { display: block; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.section-head {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 18px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.section-head::before {
+  content: "§";
+  color: var(--accent);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 18px;
+}
+.empty-state {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--ink-3);
+  font-size: 15px;
+  padding: 40px 0;
+  text-align: center;
+  font-variation-settings: "opsz" 16;
+}
+
+/* ==================  TABLE  ================== */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  margin-top: 8px;
+  background: var(--paper);
+}
+.data-table th {
+  text-align: left;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 10px 12px 10px 0;
+  border-bottom: 2px solid var(--ink);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.data-table th:hover { color: var(--ink); }
+.data-table th .sort-ind {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--accent);
+  margin-left: 4px;
+  opacity: 0.7;
+}
+.data-table td {
+  padding: 12px 12px 12px 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+.data-table tr { transition: background 0.12s; cursor: pointer; }
+.data-table tr:hover td { background: var(--paper-2); }
+.data-table tr.expanded td { background: var(--paper-2); }
+.data-table .col-id {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--accent);
+  font-size: 12px;
+  width: 70px;
+}
+.data-table .col-name {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--ink);
+}
+.data-table .mono-cell { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-2); }
+.badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+tr.detail-row { display: none; }
+tr.detail-row.show { display: table-row; }
+tr.detail-row td {
+  background: var(--paper-2) !important;
+  padding: 0 0 24px 70px;
+  border-bottom: 1px solid var(--rule);
+}
+.detail-block {
+  padding: 8px 24px 0 0;
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 10px 24px;
+  font-size: 13.5px;
+}
+.detail-block .label {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  font-variation-settings: "opsz" 14;
+}
+.detail-block .value.mono { font-family: var(--font-mono); font-size: 12.5px; }
+
+/* ==================  FILTER BAR  ================== */
+.filter-bar {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.filter-bar input[type="search"] {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 9px 14px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  color: var(--ink);
+  width: 280px;
+  outline: none;
+  transition: border-color 0.18s;
+}
+.filter-bar input[type="search"]:focus { border-color: var(--accent); }
+.filter-bar input[type="search"]::placeholder { color: var(--ink-3); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  padding: 5px 12px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-3);
+  cursor: pointer;
+  border-radius: 999px;
+  text-transform: uppercase;
+  transition: all 0.15s;
+}
+.chip:hover { color: var(--ink); border-color: var(--ink-3); }
+.chip.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.result-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-left: auto;
+  letter-spacing: 0.08em;
+}
+
+/* ==================  FIGURE CARDS  ================== */
+.fig-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 24px;
+}
+.fig-card {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  padding: 22px 24px 20px;
+  position: relative;
+  transition: transform 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+}
+.fig-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.fig-card .corner {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 4px 10px;
+}
+.fig-card h3 {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 500;
+  margin: 0 0 6px;
+  font-variation-settings: "opsz" 24;
+}
+.fig-card .summary {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--ink-2);
+  font-size: 13.5px;
+  margin-bottom: 14px;
+  font-variation-settings: "opsz" 14;
+}
+.fig-card .desc {
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.55;
+  max-height: 5.5em;
+  overflow: hidden;
+  position: relative;
+  margin-bottom: 12px;
+}
+.fig-card .desc::after {
+  content: "";
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 1.6em;
+  background: linear-gradient(transparent, var(--paper));
+}
+.fig-card .graphs-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.fig-card .graph-pill {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 3px 9px;
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  background: var(--paper-2);
+}
+.fig-card .meta {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--rule);
+  letter-spacing: 0.06em;
+}
+
+/* ==================  MODAL  ================== */
+.modal-bg {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(26,24,20,0.55);
+  backdrop-filter: blur(3px);
+  z-index: 200;
+  padding: 40px;
+  overflow-y: auto;
+}
+.modal-bg.show { display: flex; align-items: flex-start; justify-content: center; }
+.modal {
+  background: var(--paper);
+  max-width: 920px;
+  width: 100%;
+  padding: 40px 48px 48px;
+  border: 1px solid var(--ink);
+  box-shadow: 0 30px 60px -10px rgba(0,0,0,0.4);
+  position: relative;
+  animation: modalIn 0.3s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+@keyframes modalIn { from { opacity: 0; transform: translateY(20px) scale(0.98); } to { opacity: 1; transform: none; } }
+.modal .close {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  font-family: var(--font-display);
+  font-size: 28px;
+  background: none;
+  border: none;
+  color: var(--ink-2);
+  cursor: pointer;
+  line-height: 1;
+}
+.modal .close:hover { color: var(--accent); }
+.modal h2 {
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 500;
+  margin: 0 0 6px;
+  font-variation-settings: "opsz" 36;
+  letter-spacing: -0.01em;
+}
+.modal .kicker {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.modal .lede {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 16px;
+  color: var(--ink-2);
+  margin: 8px 0 22px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--rule);
+  font-variation-settings: "opsz" 18;
+}
+.modal h3 {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 26px 0 10px;
+}
+.modal p, .modal .body-text {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+
+.axes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin: 12px 0;
+}
+.axis-card {
+  background: var(--paper-2);
+  border-left: 3px solid var(--accent);
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.axis-card .ax-label {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--accent);
+  margin-bottom: 4px;
+  font-variation-settings: "opsz" 14;
+}
+.axis-card .ax-term {
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  color: var(--ink);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+.axis-card .ax-unit { font-size: 11.5px; color: var(--ink-3); }
+.axis-card .ax-prop {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  margin-top: 6px;
+  display: flex;
+  gap: 8px;
+}
+.axis-card .ax-prop span:first-child { font-weight: 600; color: var(--ink-2); }
+
+.samples-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.sample-pill {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 3px 9px;
+  background: var(--ink);
+  color: var(--paper);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sample-pill:hover { background: var(--accent); }
+
+/* ==================  AUTHORS  ================== */
+.authors-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: auth;
+}
+.authors-list li {
+  counter-increment: auth;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--rule);
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 16px;
+  align-items: baseline;
+}
+.authors-list li::before {
+  content: counter(auth, decimal-leading-zero);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.05em;
+}
+.authors-list .author-name {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 500;
+  font-variation-settings: "opsz" 18;
+}
+.authors-list .author-name .roles { display: inline-flex; gap: 4px; margin-left: 10px; }
+.role-tag {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  padding: 2px 7px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--accent);
+  color: var(--paper);
+}
+.role-tag.last { background: var(--accent-2); }
+.role-tag.corresponding, .role-tag\.co-corresponding { background: var(--accent-3); color: var(--ink); }
+.authors-list .author-affil {
+  font-style: italic;
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--ink-3);
+  margin-top: 4px;
+  font-variation-settings: "opsz" 14;
+}
+.authors-list .author-email {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--accent);
+  margin-top: 4px;
+}
+.authors-list .author-orcid {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+
+/* ==================  CONCLUSIONS  ================== */
+.conclusion-card {
+  background: var(--paper);
+  border-left: 4px solid var(--accent);
+  padding: 18px 22px 18px 26px;
+  margin-bottom: 14px;
+  position: relative;
+}
+.conclusion-card::before {
+  content: "❡";
+  position: absolute;
+  left: 8px;
+  top: 16px;
+  color: var(--accent);
+  font-family: var(--font-display);
+  font-size: 14px;
+}
+.conclusion-card .text {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-style: italic;
+  font-variation-settings: "opsz" 16;
+  line-height: 1.55;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+.conclusion-card .text em {
+  font-style: normal;
+  background: var(--hilite);
+  padding: 0 3px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+
+/* ==================  PASSAGES  ================== */
+.passage {
+  margin-bottom: 26px;
+  padding: 20px 22px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+}
+.passage .pname {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 500;
+  margin: 0 0 4px;
+  font-variation-settings: "opsz" 20;
+}
+.passage .psection {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.passage .ptext {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--ink-2);
+  font-variation-settings: "opsz" 16;
+  padding-left: 16px;
+  border-left: 2px solid var(--accent);
+}
+
+/* ==================  EMBEDDED TABLE  ================== */
+.embed-tbl-wrap { margin-bottom: 36px; }
+.embed-tbl-wrap > .ttl {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  font-variation-settings: "opsz" 22;
+}
+.embed-tbl-wrap > .meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 14px;
+}
+.embed-tbl-wrap > .summary {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--ink-2);
+  max-width: 80ch;
+  font-size: 14px;
+  margin-bottom: 16px;
+  font-variation-settings: "opsz" 16;
+}
+.embed-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  overflow-x: auto;
+  display: block;
+}
+.embed-tbl thead, .embed-tbl tbody { display: table; width: 100%; }
+.embed-tbl th {
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 2px solid var(--ink);
+}
+.embed-tbl td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--rule);
+}
+.embed-tbl tr:hover td { background: var(--paper-2); }
+
+/* references */
+.refs-grid {
+  columns: 2;
+  column-gap: 36px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.85;
+  color: var(--ink-3);
+}
+.refs-grid div { break-inside: avoid; }
+.refs-grid a {
+  color: var(--ink-2);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--rule);
+}
+.refs-grid a:hover { color: var(--accent); border-color: var(--accent); }
+
+/* abstract pane */
+.abstract-pane {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 40px;
+  margin-bottom: 32px;
+}
+.abstract-pane.no-side { grid-template-columns: 1fr; }
+.abstract-pane .abstract-body {
+  font-family: var(--font-display);
+  font-size: 17px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  font-variation-settings: "opsz" 18;
+}
+.abstract-pane .abstract-body::first-letter {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 64px;
+  line-height: 0.85;
+  float: left;
+  margin: 6px 10px 0 0;
+  color: var(--accent);
+  font-variation-settings: "opsz" 96;
+}
+.fact-stack { display: flex; flex-direction: column; gap: 14px; }
+.fact { background: var(--paper); border: 1px solid var(--rule); padding: 16px 18px; }
+.fact .lbl {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 6px;
+}
+.fact .val {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--ink);
+  font-variation-settings: "opsz" 28;
+  letter-spacing: -0.015em;
+  word-break: break-word;
+}
+.fact.accent { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.fact.accent .lbl, .fact.accent .val { color: var(--paper); }
+
+.keywords-line { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.kw {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 11px;
+  border: 1px solid var(--ink);
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 768px) {
+  .masthead, .tabs, .panel { padding-left: 24px; padding-right: 24px; }
+  .abstract-pane { grid-template-columns: 1fr; }
+  .refs-grid { columns: 1; }
+  .detail-block { grid-template-columns: 1fr; gap: 4px; }
+  tr.detail-row td { padding-left: 24px; }
+  .masthead .change-btn { position: static; margin-bottom: 14px; }
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--paper-2); }
+::-webkit-scrollbar-thumb { background: var(--rule); border: 2px solid var(--paper-2); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+</style>
+</head>
+<body>
+
+<!-- ==================  WELCOME  ================== -->
+<section class="welcome" id="welcome">
+  <div class="brand"><span class="dot">●</span> KMDS · MATERIALS RESEARCH DATA SCHEMA v15.2 · PAPER RECORD VIEWER</div>
+  <h1>Paper <em>records,</em> rendered.</h1>
+  <p class="sub">Drop any KMDS-schema JSON describing a publication and inspect samples, figures, conclusions, passages, and references in a single editorial layout.</p>
+
+  <div class="dropzone" id="dropzone">
+    <div class="icon">⤓</div>
+    <div class="label">Drop JSON file here</div>
+    <div style="font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-3); letter-spacing: 0.04em;">accepts <strong style="color:var(--ink)">.json</strong> files conforming to the KMDS paper record schema</div>
+    <div class="or">— or —</div>
+    <button id="file-btn">Choose file…</button>
+    <input type="file" id="file-input" accept=".json,application/json" style="display:none;">
+    <div class="hint">Files are read locally in your browser. Nothing is uploaded.</div>
+  </div>
+
+  <div class="error" id="error-box"></div>
+
+  <div class="footer">KMDS · Korea National Center of Materials Research Data</div>
+</section>
+
+<!-- ==================  VIEWER  ================== -->
+<div class="viewer" id="viewer">
+
+  <header class="masthead">
+    <button class="change-btn" id="change-btn">← Load another file</button>
+    <div class="row">
+      <div class="tag"><span class="dot">●</span> <span id="m-classification">KMDS · paper record</span></div>
+      <div class="tag" id="m-citation"></div>
+    </div>
+    <h1 class="title" id="m-title"></h1>
+    <div class="byline" id="m-byline"></div>
+    <div class="meta-line" id="m-meta"></div>
+  </header>
+
+  <nav class="tabs" id="tabs"></nav>
+
+  <section class="panel" data-panel="overview"></section>
+  <section class="panel" data-panel="samples"></section>
+  <section class="panel" data-panel="figures"></section>
+  <section class="panel" data-panel="tables"></section>
+  <section class="panel" data-panel="conclusions"></section>
+  <section class="panel" data-panel="passages"></section>
+  <section class="panel" data-panel="authors"></section>
+  <section class="panel" data-panel="refs"></section>
+
+  <div class="modal-bg" id="modal-bg">
+    <div class="modal" id="modal" onclick="event.stopPropagation()">
+      <button class="close" onclick="closeModal()">×</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+"use strict";
+
+// ================================================================
+// HELPERS
+// ================================================================
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Format scientific/chemical text:
+ * - ^{...} → <sup>...</sup>
+ * - _{...} → <sub>...</sub>
+ * - ^N → superscript number
+ * - subscript digits after a letter (Fe2 → Fe₂)
+ * - some common pattern: V1-x → V<sub>1-x</sub>
+ */
+function chemFmt(s) {
+  if (s == null) return '';
+  s = escapeHtml(s);
+  s = s.replace(/\^\{([^}]+)\}/g, '<sup>$1</sup>');
+  s = s.replace(/_\{([^}]+)\}/g, '<sub>$1</sub>');
+  s = s.replace(/\^(-?\d+(?:\.\d+)?)/g, '<sup>$1</sup>');
+  s = s.replace(/([A-Za-z\)])(1-[xy])/g, '$1<sub>$2</sub>');
+  s = s.replace(/([A-Za-z\)])(\d+(?:\.\d+)?)/g, '$1<sub>$2</sub>');
+  return s;
+}
+
+/**
+ * Highlight numerical-looking tokens (value + unit) in a string,
+ * for use in conclusion / passage text. Returns HTML.
+ */
+function hlNumbers(text) {
+  if (text == null) return '';
+  let t = escapeHtml(text);
+  // common unit chunks
+  const unitRe = '(?:K|kPa|MPa|GPa|h|µm|µV|µm|nm|Å|mm|cm|m|s|°|°C|°F|Ω|at%|wt%|mol%|vol%|V|A|W|J|Hz|eV|kJ|kcal|rpm|rad)';
+  const re = new RegExp(`\\b\\d+(?:\\.\\d+)?(?:e-?\\d+)?(?:\\s*${unitRe}(?:\\s*(?:\\^?\\{?-?\\d+\\}?))?(?:\\s*${unitRe}(?:\\s*\\^?\\{?-?\\d+\\}?)?)?)?`, 'g');
+  // Conservative: highlight runs of number+possible_unit, only when accompanied by a unit-ish token
+  t = t.replace(/(\b\d+(?:\.\d+)?(?:e-?\d+)?\s*(?:K|µm|mu m|W\s*m\^?\{?-?1?\}?\s*K\^?\{?-?1?\}?|s\^?\{?-?1?\}?\s*K\^?\{?-?4?\}?|µV\s*K\^?\{?-?1?\}?|mu V\s*K\^?\{?-?1?\}?|mW\s*m\^?\{?-?1?\}?\s*K\^?\{?-?2?\}?|at%|mol%|wt%|vol%|h|MPa|GPa|nm|Å|°C|Ω|cm|eV|J|kJ|rpm))/g, '<em>$1</em>');
+  t = t.replace(/(ZT\s*[≈=]\s*\d+(?:\.\d+)?)/g, '<em>$1</em>');
+  t = t.replace(/(\b[xy]\s*[≤=≥<>]\s*\d+(?:\.\d+)?)/g, '<em>$1</em>');
+  t = t.replace(/\^\{([^}]+)\}/g, '<sup>$1</sup>');
+  t = t.replace(/_\{([^}]+)\}/g, '<sub>$1</sub>');
+  // chemFmt-style subscripting for chemical formulas
+  t = t.replace(/([A-Z][a-z]?)(\d+(?:\.\d+)?)/g, '$1<sub>$2</sub>');
+  // L21 type
+  t = t.replace(/L2<sub>1<\/sub>/g, 'L2<sub>1</sub>');
+  return t;
+}
+
+function plural(n, sing, plur) { return n === 1 ? sing : (plur || sing + 's'); }
+
+// safely get nested property
+function get(obj, path, fallback) {
+  if (!obj) return fallback;
+  const parts = path.split('.');
+  let cur = obj;
+  for (const p of parts) {
+    if (cur == null) return fallback;
+    cur = cur[p];
+  }
+  return cur == null ? fallback : cur;
+}
+
+// Format author last/first
+function authorShortName(a) {
+  if (!a) return '';
+  const fn = (a['given name'] || '').trim();
+  const ln = (a['family name'] || '').trim();
+  if (!fn && !ln) return '';
+  const initial = fn ? fn.split(/[\s-]+/).map(p => p[0] + '.').join(' ') : '';
+  return `${initial} ${ln}`.trim();
+}
+
+// ================================================================
+// FILE LOAD
+// ================================================================
+const dropzone = $('#dropzone');
+const fileInput = $('#file-input');
+const fileBtn = $('#file-btn');
+const errorBox = $('#error-box');
+
+['dragenter', 'dragover'].forEach(ev =>
+  dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('dragover'); }));
+['dragleave', 'drop'].forEach(ev =>
+  dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove('dragover'); }));
+
+dropzone.addEventListener('drop', e => {
+  const f = e.dataTransfer.files[0];
+  if (f) loadFile(f);
+});
+dropzone.addEventListener('click', e => {
+  if (e.target.tagName !== 'BUTTON') fileInput.click();
+});
+fileBtn.addEventListener('click', e => { e.stopPropagation(); fileInput.click(); });
+fileInput.addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (f) loadFile(f);
+});
+
+$('#change-btn').addEventListener('click', () => {
+  $('#viewer').classList.remove('show');
+  $('#welcome').classList.remove('hidden');
+  errorBox.classList.remove('show');
+  fileInput.value = '';
+});
+
+function showError(msg) {
+  errorBox.textContent = msg;
+  errorBox.classList.add('show');
+}
+
+function loadFile(file) {
+  errorBox.classList.remove('show');
+  if (!file.name.toLowerCase().endsWith('.json') && file.type !== 'application/json') {
+    showError(`"${file.name}" doesn't look like a JSON file.`);
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      validateAndRender(data);
+    } catch (err) {
+      showError(`Failed to parse JSON: ${err.message}`);
+    }
+  };
+  reader.onerror = () => showError('Failed to read file.');
+  reader.readAsText(file);
+}
+
+function validateAndRender(data) {
+  if (!data || typeof data !== 'object') {
+    showError('Top-level JSON must be an object.');
+    return;
+  }
+  if (!data.metadata) {
+    showError('Missing required "metadata" object.');
+    return;
+  }
+  if (!data.metadata.publication) {
+    showError('No "metadata.publication" found in this JSON. This viewer expects a KMDS paper record.');
+    return;
+  }
+  render(data);
+  $('#welcome').classList.add('hidden');
+  $('#viewer').classList.add('show');
+  window.scrollTo(0, 0);
+}
+
+// ================================================================
+// RENDER
+// ================================================================
+let CURRENT_DATA = null;
+let CURRENT_PUB = null;
+let SAMPLE_FACETS = []; // dynamic facet definitions for samples tab
+
+function render(data) {
+  CURRENT_DATA = data;
+  CURRENT_PUB = data.metadata.publication;
+  renderMasthead();
+  renderTabs();
+  renderOverview();
+  renderSamplesPanel();
+  renderFiguresPanel();
+  renderTablesPanel();
+  renderConclusionsPanel();
+  renderPassagesPanel();
+  renderAuthorsPanel();
+  renderRefsPanel();
+  // activate first non-empty tab
+  const firstTab = $$('.tab').find(t => !t.classList.contains('empty'));
+  if (firstTab) firstTab.click();
+}
+
+// -------- MASTHEAD --------
+function renderMasthead() {
+  const pub = CURRENT_PUB;
+  const meta = CURRENT_DATA.metadata;
+
+  $('#m-classification').innerHTML = `<span class="dot">●</span> KMDS · paper record${meta['data classification'] && meta['data classification'].length ? ' · ' + meta['data classification'].join(' / ') : ''}`;
+
+  // citation tag (right side)
+  const authors = pub.authors || [];
+  const yr = pub.year || (pub.dates && (pub.dates.published || pub.dates['published online'] || '').slice(0, 4));
+  const cit = [];
+  if (authors[0]) cit.push(authors[0]['family name'] + (authors.length > 1 ? ' et al.' : ''));
+  if (yr) cit.push(yr);
+  if (pub.journal && pub.journal.abbreviation) cit.push(pub.journal.abbreviation);
+  if (pub.volume) cit.push(pub.volume + (pub['first page'] ? ', ' + pub['first page'] : ''));
+  $('#m-citation').textContent = cit.join(' · ');
+
+  $('#m-title').innerHTML = chemFmt(pub.title || meta['data name'] || 'Untitled record');
+
+  $('#m-byline').textContent = authors
+    .map(a => `${a['given name'] || ''} ${a['family name'] || ''}`.trim())
+    .filter(Boolean)
+    .join(' · ');
+
+  const items = [];
+  if (pub.DOI)              items.push(['DOI', pub.DOI]);
+  if (pub.volume)           items.push(['Vol', pub.volume]);
+  if (pub.issue)            items.push(['Issue', pub.issue]);
+  if (pub['article number']) items.push(['Art', pub['article number']]);
+  else if (pub['first page']) items.push(['Pages', pub['first page'] + (pub['last page'] && pub['last page'] !== pub['first page'] ? '–' + pub['last page'] : '')]);
+  if (pub.type)             items.push(['Type', pub.type]);
+  if (pub['open access status']) items.push(['OA', pub['open access status']]);
+  const pubDate = pub.dates && (pub.dates.published || pub.dates['published online']);
+  if (pubDate)              items.push(['Pub', pubDate]);
+  $('#m-meta').innerHTML = items.map(([k, v]) =>
+    `<div><strong>${escapeHtml(k)}</strong> ${escapeHtml(v)}</div>`).join('');
+}
+
+// -------- TABS --------
+function renderTabs() {
+  const pub = CURRENT_PUB;
+  const tabs = [
+    { key: 'overview',    label: 'Overview',    count: null },
+    { key: 'samples',     label: 'Samples',     count: (pub.samples || []).length },
+    { key: 'figures',     label: 'Figures',     count: (pub.figures || []).length },
+    { key: 'tables',      label: 'Tables',      count: (pub.tables  || []).length },
+    { key: 'conclusions', label: 'Conclusions', count: getConclusions().length },
+    { key: 'passages',    label: 'Passages',    count: (pub['text passages'] || []).length },
+    { key: 'authors',     label: 'Authors',     count: (pub.authors || []).length },
+    { key: 'refs',        label: 'References',  count: (pub.references || []).length },
+  ];
+  $('#tabs').innerHTML = tabs.map(t => {
+    const empty = t.count === 0;
+    const countStr = t.count != null ? `<span class="count">${t.count}</span>` : '';
+    return `<button class="tab ${empty ? 'empty' : ''}" data-tab="${t.key}">${t.label}${countStr}</button>`;
+  }).join('');
+  $$('#tabs .tab').forEach(tab => {
+    tab.onclick = () => {
+      if (tab.classList.contains('empty')) return;
+      $$('#tabs .tab').forEach(t => t.classList.remove('active'));
+      $$('.panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      $(`.panel[data-panel="${tab.dataset.tab}"]`).classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+  });
+}
+
+// -------- OVERVIEW --------
+function renderOverview() {
+  const pub = CURRENT_PUB;
+  const meta = CURRENT_DATA.metadata;
+  const panel = $('.panel[data-panel="overview"]');
+  const scope = pub.scope || {};
+  // Backward-compat: accept both new (purposes/approaches arrays) and old (purpose/approach single string) forms
+  const purposes = scope.purposes
+    || (scope.purpose ? (Array.isArray(scope.purpose) ? scope.purpose : [scope.purpose]) : []);
+  const approaches = scope.approaches
+    || (scope.approach ? (Array.isArray(scope.approach) ? scope.approach : [scope.approach]) : []);
+  const keywords = pub['author keywords'] || meta.keywords || [];
+
+  // facts (max 4) — derived from anything available
+  const facts = [];
+  if (pub.journal && pub.journal.name) {
+    facts.push({ lbl: 'Journal', val: pub.journal.name, sub: pub.journal.publisher });
+  }
+  if (pub.year || pub.dates) {
+    facts.push({ lbl: 'Publication', val: (pub.year || ''), sub: pub.dates && (pub.dates.published || pub.dates['published online']) });
+  }
+  if (scope.paradigms && scope.paradigms.length) {
+    facts.push({ lbl: 'Paradigm', val: scope.paradigms.join(' + ') });
+  }
+  if (pub.samples && pub.samples.length) {
+    facts.push({ lbl: 'Samples recorded', val: pub.samples.length });
+  }
+  if (pub.figures && pub.figures.length) {
+    facts.push({ lbl: 'Figures recorded', val: pub.figures.length });
+  }
+  // Accent the first one
+  const factsHtml = facts.slice(0, 4).map((f, i) => `
+    <div class="fact ${i === 0 ? 'accent' : ''}">
+      <div class="lbl">${escapeHtml(f.lbl)}</div>
+      <div class="val">${escapeHtml(String(f.val))}${f.sub ? ` <span style="display:block; font-size:12px; font-style:italic; opacity:0.75; font-weight:400; margin-top:2px;">${escapeHtml(f.sub)}</span>` : ''}</div>
+    </div>
+  `).join('');
+
+  const hasAbstract = !!pub.abstract;
+  const hasFacts = facts.length > 0;
+  const paneClass = (hasAbstract && hasFacts) ? '' : 'no-side';
+
+  panel.innerHTML = `
+    ${hasAbstract ? `
+      <h2 class="section-head">Abstract</h2>
+      <div class="abstract-pane ${paneClass}">
+        <div class="abstract-body">${chemFmt(pub.abstract)}</div>
+        ${hasFacts ? `<div class="fact-stack">${factsHtml}</div>` : ''}
+      </div>
+    ` : (hasFacts ? `
+      <h2 class="section-head">At a glance</h2>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 32px;">${factsHtml}</div>
+    ` : '')}
+
+    ${keywords.length ? `
+      <h2 class="section-head">Keywords</h2>
+      <div class="keywords-line">${keywords.map(k => `<span class="kw">${escapeHtml(k)}</span>`).join('')}</div>
+    ` : ''}
+
+    ${purposes.length ? `
+      <h2 class="section-head">Research purpose${purposes.length === 1 ? '' : 's'}</h2>
+      <ol style="padding-left: 20px; font-family: var(--font-display); font-style: italic; font-size: 15px; line-height: 1.7; color: var(--ink-2); font-variation-settings: 'opsz' 16;">
+        ${purposes.map(p => `<li>${chemFmt(p)}</li>`).join('')}
+      </ol>
+    ` : ''}
+
+    ${approaches.length ? `
+      <h2 class="section-head">Approach${approaches.length === 1 ? '' : 'es'}</h2>
+      <ul style="padding-left: 20px; font-size: 13.5px; line-height: 1.7; color: var(--ink-2);">
+        ${approaches.map(a => `<li>${chemFmt(a)}</li>`).join('')}
+      </ul>
+    ` : ''}
+
+    ${scope.classifications && scope.classifications.length ? `
+      <h2 class="section-head">Classifications</h2>
+      <div style="display:flex; flex-wrap:wrap; gap: 8px;">
+        ${scope.classifications.map(c => `
+          <div style="border:1px solid var(--rule); padding: 8px 14px; background: var(--paper);">
+            <div style="font-family: var(--font-mono); font-size: 10px; color: var(--ink-3); letter-spacing: .08em; text-transform: uppercase;">${escapeHtml(c.scheme || '')}</div>
+            <div style="font-family: var(--font-display); font-size: 14px; color: var(--ink);">${escapeHtml(c.name || c.code || '')}</div>
+            ${c.code && c.code !== c.name ? `<div style="font-family: var(--font-mono); font-size: 11px; color: var(--accent);">${escapeHtml(c.code)}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
+  `;
+}
+
+// -------- SAMPLES --------
+let sampleState = { search: '', filter: 'all', sortKey: 'id', sortDir: 1 };
+
+function detectSampleFacets() {
+  // build dynamic facets based on the unique mixing types observed
+  const samples = CURRENT_PUB.samples || [];
+  const mixings = Array.from(new Set(samples.map(s => s['mixing type']).filter(Boolean)));
+  const facets = [{ key: 'all', label: 'All', match: () => true }];
+  mixings.forEach(m => {
+    facets.push({
+      key: 'mix:' + m,
+      label: m,
+      match: s => s['mixing type'] === m
+    });
+  });
+  return facets;
+}
+
+function renderSamplesPanel() {
+  const panel = $('.panel[data-panel="samples"]');
+  const samples = CURRENT_PUB.samples || [];
+  if (!samples.length) {
+    panel.innerHTML = `<h2 class="section-head">Sample catalogue</h2><div class="empty-state">No samples recorded in this paper.</div>`;
+    return;
+  }
+  SAMPLE_FACETS = detectSampleFacets();
+  sampleState = { search: '', filter: 'all', sortKey: 'id', sortDir: 1 };
+
+  panel.innerHTML = `
+    <h2 class="section-head">Sample catalogue</h2>
+    <div class="filter-bar">
+      <input type="search" id="sample-search" placeholder="search by name, description, mixing type…">
+      <div class="chips" id="sample-chips">
+        ${SAMPLE_FACETS.map((f, i) => `<button class="chip ${i===0?'active':''}" data-facet="${escapeHtml(f.key)}">${escapeHtml(f.label)}</button>`).join('')}
+      </div>
+      <div class="result-count" id="sample-count">${samples.length} / ${samples.length}</div>
+    </div>
+    <div style="overflow-x: auto;">
+    <table class="data-table" id="samples-table">
+      <thead>
+        <tr>
+          <th data-sort="id">Local ID</th>
+          <th data-sort="name">Name <span class="sort-ind">▼</span></th>
+          <th data-sort="mix">Mixing type</th>
+          <th data-sort="comp">Components</th>
+        </tr>
+      </thead>
+      <tbody id="samples-tbody"></tbody>
+    </table>
+    </div>
+  `;
+
+  $('#sample-search').oninput = e => { sampleState.search = e.target.value; renderSamplesTable(); };
+  $$('#sample-chips .chip').forEach(c => {
+    c.onclick = () => {
+      $$('#sample-chips .chip').forEach(x => x.classList.remove('active'));
+      c.classList.add('active');
+      sampleState.filter = c.dataset.facet;
+      renderSamplesTable();
+    };
+  });
+  $$('#samples-table th').forEach(th => {
+    th.onclick = () => {
+      const k = th.dataset.sort;
+      if (sampleState.sortKey === k) sampleState.sortDir *= -1;
+      else { sampleState.sortKey = k; sampleState.sortDir = 1; }
+      $$('#samples-table th .sort-ind').forEach(s => s.remove());
+      const ind = document.createElement('span');
+      ind.className = 'sort-ind';
+      ind.textContent = sampleState.sortDir > 0 ? '▼' : '▲';
+      th.appendChild(ind);
+      renderSamplesTable();
+    };
+  });
+
+  renderSamplesTable();
+}
+
+function renderSamplesTable() {
+  const samples = CURRENT_PUB.samples || [];
+  const facet = SAMPLE_FACETS.find(f => f.key === sampleState.filter) || SAMPLE_FACETS[0];
+  let rows = samples.filter(s => {
+    if (!facet.match(s)) return false;
+    if (sampleState.search) {
+      const q = sampleState.search.toLowerCase();
+      const hay = [s.name, s.description, s['mixing type'], ...(s.components||[]).map(c => c.name + ' ' + (c.description||''))].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  rows.sort((a, b) => {
+    let av, bv;
+    if (sampleState.sortKey === 'id') { av = a['sample local id'] || ''; bv = b['sample local id'] || ''; }
+    else if (sampleState.sortKey === 'name') { av = a.name || ''; bv = b.name || ''; }
+    else if (sampleState.sortKey === 'mix')  { av = a['mixing type'] || ''; bv = b['mixing type'] || ''; }
+    else if (sampleState.sortKey === 'comp') { av = (a.components||[]).length; bv = (b.components||[]).length; return (av - bv) * sampleState.sortDir; }
+    return String(av).localeCompare(String(bv)) * sampleState.sortDir;
+  });
+  $('#sample-count').textContent = `${rows.length} / ${samples.length}`;
+  $('#samples-tbody').innerHTML = rows.map(s => {
+    const id = s['sample local id'] || '—';
+    const comps = (s.components || []).map(c => chemFmt(c.name)).join(' / ');
+    return `
+      <tr data-id="${escapeHtml(id)}" onclick="toggleSampleDetail('${escapeHtml(id)}')">
+        <td class="col-id">${escapeHtml(id)}</td>
+        <td class="col-name">${chemFmt(s.name || '')}</td>
+        <td><span class="badge" style="color: var(--ink-2);">${escapeHtml(s['mixing type'] || '—')}</span></td>
+        <td class="mono-cell">${comps || '—'}</td>
+      </tr>
+      <tr class="detail-row" id="dr-${escapeHtml(id)}">
+        <td colspan="4">
+          <div class="detail-block">
+            ${s.description ? `<div class="label">Description</div><div class="value">${chemFmt(s.description)}</div>` : ''}
+            ${(s.components || []).map((c, i) => `
+              <div class="label">Component ${i+1}</div>
+              <div class="value">
+                <strong>${chemFmt(c.name || '—')}</strong>
+                ${c.role ? `<span style="font-family: var(--font-mono); font-size: 10px; color: var(--accent); margin-left: 8px; text-transform: uppercase; letter-spacing: .08em;">${escapeHtml(c.role)}</span>` : ''}
+                ${c['fraction value'] != null ? `<span style="font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); margin-left: 8px;">${c['fraction value']} ${escapeHtml(c['fraction unit'] || '')}</span>` : ''}
+                ${c.description ? `<br><span style="color: var(--ink-3); font-size: 12.5px;">${chemFmt(c.description)}</span>` : ''}
+                ${(c.references || []).length ? `<br><span style="font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3);">refs: ${c.references.map(r => `${escapeHtml(r.scheme)}/${escapeHtml(r.id)}`).join(', ')}</span>` : ''}
+              </div>
+            `).join('')}
+            ${s['Starrydata sample id'] ? `<div class="label">Starrydata ID</div><div class="value mono">${s['Starrydata sample id']}</div>` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+window.toggleSampleDetail = function(id) {
+  const dr = document.getElementById('dr-' + id);
+  const tr = document.querySelector(`#samples-tbody tr[data-id="${CSS.escape(id)}"]`);
+  if (!dr || !tr) return;
+  if (dr.classList.contains('show')) {
+    dr.classList.remove('show'); tr.classList.remove('expanded');
+  } else {
+    $$('#samples-tbody tr.detail-row.show').forEach(r => r.classList.remove('show'));
+    $$('#samples-tbody tr.expanded').forEach(r => r.classList.remove('expanded'));
+    dr.classList.add('show'); tr.classList.add('expanded');
+  }
+};
+
+// -------- FIGURES --------
+function renderFiguresPanel() {
+  const panel = $('.panel[data-panel="figures"]');
+  const figures = CURRENT_PUB.figures || [];
+  if (!figures.length) {
+    panel.innerHTML = `<h2 class="section-head">Figures &amp; graphs</h2><div class="empty-state">No figures recorded.</div>`;
+    return;
+  }
+  panel.innerHTML = `
+    <h2 class="section-head">Figures &amp; graphs</h2>
+    <p style="font-family:var(--font-display); font-style:italic; color:var(--ink-2); margin-top:0; font-size:14px;">Click any card to open the full figure record with axes, sample mappings, and digitization notes.</p>
+    <div class="fig-grid">
+      ${figures.map(f => {
+        const nGraphs = (f.graphs || []).length;
+        const sampleSet = new Set();
+        (f.graphs || []).forEach(g => (g.samples || []).forEach(s => sampleSet.add(s)));
+        return `
+          <div class="fig-card" onclick="openFigure('${escapeHtml(f['figure local id'])}')">
+            <div class="corner">${escapeHtml(f['figure local id'])}</div>
+            <h3>${escapeHtml(f['figure name'] || '—')}</h3>
+            <div class="summary">${chemFmt(f['caption summary'] || '')}</div>
+            ${f.description ? `<div class="desc">${chemFmt(f.description)}</div>` : ''}
+            ${nGraphs > 0 ? `<div class="graphs-list">${(f.graphs || []).map(g => `<span class="graph-pill">${escapeHtml(g['graph name'] || g['graph local id'])}</span>`).join('')}</div>` : ''}
+            <div class="meta">
+              <span>${nGraphs} ${plural(nGraphs, 'graph')} · ${sampleSet.size} ${plural(sampleSet.size, 'sample')}</span>
+              <span>${escapeHtml((f.structure || '').slice(0, 38))}${f.structure && f.structure.length > 38 ? '…' : ''}</span>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+window.openFigure = function(figId) {
+  const f = (CURRENT_PUB.figures || []).find(x => x['figure local id'] === figId);
+  if (!f) return;
+  let html = `
+    <div class="kicker">${escapeHtml(figId)} · figure record</div>
+    <h2>${escapeHtml(f['figure name'] || '—')}</h2>
+    ${f['caption summary'] ? `<div class="lede">${chemFmt(f['caption summary'])}</div>` : ''}
+    ${f.structure ? `<h3>Structure</h3><p>${escapeHtml(f.structure)}</p>` : ''}
+    ${f.description ? `<h3>Description</h3><p>${chemFmt(f.description)}</p>` : ''}
+  `;
+  if ((f.graphs || []).length) {
+    html += `<h3>Graphs (${f.graphs.length})</h3>`;
+    f.graphs.forEach(g => {
+      html += `
+        <div style="border-left:3px solid var(--accent); padding: 0 0 12px 16px; margin-bottom: 20px;">
+          <div style="font-family:var(--font-display); font-size:17px; font-weight:500; margin-bottom:4px;">
+            ${escapeHtml(g['graph name'] || g['graph local id'])}
+            <span style="font-family:var(--font-mono); font-size:10.5px; color:var(--ink-3); margin-left:10px;">${escapeHtml(g['graph local id'])}</span>
+          </div>
+          ${g['caption summary'] ? `<div style="font-family:var(--font-display); font-style:italic; color:var(--ink-2); font-size:13.5px; margin-bottom:10px;">${chemFmt(g['caption summary'])}</div>` : ''}
+          ${(g.axes || []).length ? `
+            <div class="axes-grid">
+              ${g.axes.map(ax => `
+                <div class="axis-card">
+                  <div class="ax-label">${escapeHtml(ax.axis || '?')}-axis</div>
+                  <div class="ax-term">${escapeHtml((ax.quantity && ax.quantity.term) || '—')}</div>
+                  <div class="ax-unit">unit: ${escapeHtml(ax.unit || '—')} · scale: ${escapeHtml(ax.scale || '—')}</div>
+                  ${(ax['reference ticks'] || []).length ? `<div class="ax-prop"><span>Ticks</span><span>${ax['reference ticks'].join(', ')}</span></div>` : ''}
+                  ${ax['SI conversion'] && ax['SI conversion'] !== 'n/a' ? `<div class="ax-prop"><span>SI</span><span>${escapeHtml(ax['SI conversion'])}</span></div>` : ''}
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
+          ${(g.samples || []).length ? `
+            <div style="margin-top:10px;">
+              <div style="font-family:var(--font-mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-3); margin-bottom:6px;">${g.samples.length} ${plural(g.samples.length, 'sample')} plotted</div>
+              <div class="samples-list">${g.samples.map(s => `<span class="sample-pill" onclick="event.stopPropagation(); goToSample('${escapeHtml(s)}')">${escapeHtml(s)}</span>`).join('')}</div>
+            </div>
+          ` : ''}
+          ${g.description ? `<div style="margin-top:10px; font-size:13px; color:var(--ink-2); line-height:1.55;"><strong style="font-family:var(--font-mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3);">Detail</strong><br>${chemFmt(g.description)}</div>` : ''}
+          ${g.digitization ? `<div style="margin-top:10px; font-size:13px; color:var(--ink-2); line-height:1.55;"><strong style="font-family:var(--font-mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3);">Digitization</strong><br>${chemFmt(g.digitization)}</div>` : ''}
+        </div>
+      `;
+    });
+  } else if (f.comments && f.comments.length) {
+    html += `<h3>Notes</h3><p>${f.comments.map(c => escapeHtml(c)).join(' ')}</p>`;
+  }
+  $('#modal-body').innerHTML = html;
+  $('#modal-bg').classList.add('show');
+};
+
+window.goToSample = function(id) {
+  closeModal();
+  const tab = document.querySelector('.tab[data-tab="samples"]');
+  if (!tab || tab.classList.contains('empty')) return;
+  $$('.tab').forEach(t => t.classList.remove('active'));
+  $$('.panel').forEach(p => p.classList.remove('active'));
+  tab.classList.add('active');
+  $('.panel[data-panel="samples"]').classList.add('active');
+  setTimeout(() => {
+    toggleSampleDetail(id);
+    const tr = document.querySelector(`#samples-tbody tr[data-id="${CSS.escape(id)}"]`);
+    if (tr) tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, 80);
+};
+
+window.closeModal = function() { $('#modal-bg').classList.remove('show'); };
+document.getElementById('modal-bg').onclick = closeModal;
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+// -------- TABLES --------
+function renderTablesPanel() {
+  const panel = $('.panel[data-panel="tables"]');
+  const tables = CURRENT_PUB.tables || [];
+  if (!tables.length) {
+    panel.innerHTML = `<h2 class="section-head">Tables</h2><div class="empty-state">No tables recorded.</div>`;
+    return;
+  }
+  panel.innerHTML = `
+    <h2 class="section-head">Tables</h2>
+    ${tables.map(t => {
+      const headers = t.headers || [];
+      const rows = t.rows || [];
+      return `
+        <div class="embed-tbl-wrap">
+          <div class="ttl">${escapeHtml(t['table name'] || t['table local id'])}</div>
+          <div class="meta">${escapeHtml(t['table local id'] || '')} · ${rows.length} ${plural(rows.length, 'row')}, ${headers.length} ${plural(headers.length, 'column')}</div>
+          ${t['caption summary'] ? `<div class="summary">${chemFmt(t['caption summary'])}</div>` : ''}
+          ${headers.length || rows.length ? `
+          <table class="embed-tbl">
+            <thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+            <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(String(c))}</td>`).join('')}</tr>`).join('')}</tbody>
+          </table>` : '<div class="empty-state">Table is empty.</div>'}
+          ${t.description ? `<p style="font-size:13px; color:var(--ink-2); margin-top:14px; line-height:1.6;">${chemFmt(t.description)}</p>` : ''}
+          ${(t.samples || []).length ? `
+            <div style="margin-top:10px;">
+              <span style="font-family:var(--font-mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); margin-right:10px;">Samples</span>
+              ${t.samples.map(s => `<span class="sample-pill" onclick="goToSample('${escapeHtml(s)}')">${escapeHtml(s)}</span>`).join(' ')}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('')}
+  `;
+}
+
+function getConclusions() {
+  const scope = CURRENT_PUB.scope || {};
+  // Strict structured form
+  if (Array.isArray(scope.conclusions) && scope.conclusions.length) return scope.conclusions;
+  // Fallback: old single-string "notes" field -> wrap as one entry, if non-trivial
+  if (typeof scope.notes === 'string' && scope.notes.trim().length > 20) {
+    return [{ text: scope.notes, samples: [] }];
+  }
+  return [];
+}
+
+// -------- CONCLUSIONS --------
+function renderConclusionsPanel() {
+  const panel = $('.panel[data-panel="conclusions"]');
+  const conclusions = getConclusions();
+  if (!conclusions.length) {
+    panel.innerHTML = `<h2 class="section-head">Logical conclusions</h2><div class="empty-state">No conclusions recorded.</div>`;
+    return;
+  }
+  panel.innerHTML = `
+    <h2 class="section-head">Logical conclusions <span style="font-family:var(--font-mono); font-size:10px; color:var(--ink-3); letter-spacing:.1em; margin-left:8px;">stripped of rhetoric · with preconditions</span></h2>
+    ${conclusions.map((c, i) => `
+      <div class="conclusion-card">
+        <div style="font-family:var(--font-mono); font-size:10px; letter-spacing:.14em; color:var(--accent); margin-bottom:6px;">CONCLUSION ${String(i+1).padStart(2,'0')}</div>
+        <div class="text">${hlNumbers(c.text || '')}</div>
+        ${(c.samples || []).length ? `
+          <div style="margin-top:10px; padding-top:10px; border-top:1px dashed var(--rule);">
+            <div style="font-family:var(--font-mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-3); margin-bottom:6px;">Concerns ${c.samples.length} ${plural(c.samples.length, 'sample')}</div>
+            <div class="samples-list">${c.samples.map(s => `<span class="sample-pill" onclick="goToSample('${escapeHtml(s)}')">${escapeHtml(s)}</span>`).join('')}</div>
+          </div>
+        ` : ''}
+      </div>
+    `).join('')}
+  `;
+}
+
+// -------- PASSAGES --------
+function renderPassagesPanel() {
+  const panel = $('.panel[data-panel="passages"]');
+  const passages = CURRENT_PUB['text passages'] || [];
+  if (!passages.length) {
+    panel.innerHTML = `<h2 class="section-head">Text passages</h2><div class="empty-state">No passages recorded.</div>`;
+    return;
+  }
+  panel.innerHTML = `
+    <h2 class="section-head">Text passages</h2>
+    ${passages.map(p => `
+      <div class="passage">
+        <h3 class="pname">${chemFmt(p['passage name'] || '—')}</h3>
+        ${p.section ? `<div class="psection">${escapeHtml(p.section)}</div>` : ''}
+        ${p.text ? `<div class="ptext">${hlNumbers(p.text)}</div>` : ''}
+        ${(p.samples || []).length ? `
+          <div style="margin-top:14px;">
+            <span style="font-family:var(--font-mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); margin-right:10px;">Samples</span>
+            ${p.samples.map(s => `<span class="sample-pill" onclick="goToSample('${escapeHtml(s)}')">${escapeHtml(s)}</span>`).join(' ')}
+          </div>
+        ` : ''}
+      </div>
+    `).join('')}
+  `;
+}
+
+// -------- AUTHORS --------
+function renderAuthorsPanel() {
+  const panel = $('.panel[data-panel="authors"]');
+  const authors = CURRENT_PUB.authors || [];
+  if (!authors.length) {
+    panel.innerHTML = `<h2 class="section-head">Author roster</h2><div class="empty-state">No authors recorded.</div>`;
+    return;
+  }
+  panel.innerHTML = `
+    <h2 class="section-head">Author roster</h2>
+    <ol class="authors-list">
+      ${authors.map(a => {
+        const roles = (a.roles || []).map(r => `<span class="role-tag ${escapeHtml(r)}">${escapeHtml(r)}</span>`).join('');
+        const affil = (a.affiliations || []).map(af => af.name + (af.country ? ` <span style="font-family:var(--font-mono); font-size:10.5px; color: var(--ink-3); font-style: normal;">[${escapeHtml(af.country)}]</span>` : '')).join('<br>');
+        return `
+          <li>
+            <div>
+              <div class="author-name">${escapeHtml(a['given name'] || '')} <strong>${escapeHtml(a['family name'] || '')}</strong><span class="roles">${roles}</span></div>
+              ${affil ? `<div class="author-affil">${affil}</div>` : ''}
+              ${a['email address'] ? `<div class="author-email">${escapeHtml(a['email address'])}</div>` : ''}
+              ${a.ORCID ? `<div class="author-orcid">ORCID: ${escapeHtml(a.ORCID)}</div>` : ''}
+            </div>
+          </li>
+        `;
+      }).join('')}
+    </ol>
+  `;
+}
+
+// -------- REFS --------
+function renderRefsPanel() {
+  const panel = $('.panel[data-panel="refs"]');
+  const refs = CURRENT_PUB.references || [];
+  if (!refs.length) {
+    panel.innerHTML = `<h2 class="section-head">Reference DOIs</h2><div class="empty-state">No references recorded.</div>`;
+    return;
+  }
+  panel.innerHTML = `
+    <h2 class="section-head">Reference DOIs <span style="font-family:var(--font-mono); font-size:10px; color:var(--ink-3); letter-spacing:.1em; margin-left:8px;">${refs.length} ${plural(refs.length, 'entry', 'entries')} · click to resolve</span></h2>
+    <div class="refs-grid">
+      ${refs.map((doi, i) => `<div>[${String(i+1).padStart(2,'0')}] <a href="https://doi.org/${encodeURI(doi)}" target="_blank" rel="noopener">${escapeHtml(doi)}</a></div>`).join('')}
+    </div>
+  `;
+}
+
+</script>
+</body>
+</html>
