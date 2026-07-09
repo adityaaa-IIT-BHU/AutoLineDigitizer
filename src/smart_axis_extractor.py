@@ -224,6 +224,7 @@ class SmartAxisExtractor:
         y_band_v_margin_px: int = 10,
         max_residual_drop_px: float = 8.0,
         min_ticks: int = 2,
+        log_min_decades: float = 1.5,
     ):
         self.x_band_height_frac = x_band_height_frac
         self.y_band_width_frac = y_band_width_frac
@@ -231,6 +232,10 @@ class SmartAxisExtractor:
         self.y_band_v_margin_px = y_band_v_margin_px
         self.max_residual_drop_px = max_residual_drop_px
         self.min_ticks = min_ticks
+        # A log axis is only accepted if the tick values span at least this
+        # many decades. Prevents a marginally-better log fit from hijacking a
+        # genuinely linear axis (e.g. a 2.0-5.0 V voltage axis).
+        self.log_min_decades = log_min_decades
 
     # ---- Geometry: define where tick labels are allowed to live ----------
 
@@ -413,40 +418,76 @@ class SmartAxisExtractor:
         """Fit the best linear or log calibration through tick labels.
 
         Strategy:
-          1. Try a linear fit (value vs pixel) via least squares.
-          2. If all values are positive, also try log fit (log10(value) vs pixel).
-          3. Keep whichever has lower RMS residual *in pixel space*
-             (so the comparison is fair across scales).
-          4. Drop outliers whose residual exceeds max_residual_drop_px and refit.
+          1. Robustly fit a linear calibration (RANSAC over minimal 2-point
+             models) so a single gross OCR misread (e.g. "500" read as
+             "20500") is rejected as an outlier instead of dragging a plain
+             least-squares fit and causing it to drop a *good* tick.
+          2. If all values are positive, robustly fit a log calibration too.
+          3. Prefer log ONLY if it fits better AND the (inlier) tick values
+             span at least `log_min_decades` decades — otherwise a marginally
+             better log fit can hijack a genuinely linear axis.
         """
-        # Linear fit
-        lin = self._fit_linear(ticks, log=False)
-        # Log fit (only if all values are positive)
-        log = None
+        lin, lin_inliers = self._fit_robust(ticks, log=False)
+
+        log, log_inliers = (None, [])
         if all(t.value > 0 for t in ticks):
-            log = self._fit_linear(ticks, log=True)
+            log, log_inliers = self._fit_robust(ticks, log=True)
 
-        # Pick the better one by pixel-space residual
-        best = lin
+        best, used = lin, lin_inliers
         if log is not None and log.rms_residual_px < lin.rms_residual_px:
-            best = log
+            vals = [t.value for t in log_inliers if t.value > 0]
+            decades = (math.log10(max(vals) / min(vals))
+                       if len(vals) >= 2 and min(vals) > 0 else 0.0)
+            if decades >= self.log_min_decades:
+                best, used = log, log_inliers
 
-        # Outlier rejection: drop the worst tick if it's beyond threshold, refit
-        refined_ticks = list(ticks)
-        dropped = 0
-        while len(refined_ticks) > self.min_ticks:
-            residuals = self._tick_residuals(refined_ticks, best)
-            worst_i = int(np.argmax(np.abs(residuals)))
-            if abs(residuals[worst_i]) <= self.max_residual_drop_px:
-                break
-            refined_ticks.pop(worst_i)
-            dropped += 1
-            # Refit
-            best = self._fit_linear(refined_ticks, log=best.is_log)
-
-        best.n_ticks_used = len(refined_ticks)
-        best.n_ticks_dropped = dropped
+        best.n_ticks_used = len(used)
+        best.n_ticks_dropped = len(ticks) - len(used)
         return best
+
+    def _fit_robust(self, ticks: List[TickLabel], log: bool):
+        """RANSAC-style robust line fit. Returns (AxisFit, inlier_ticks).
+
+        For each pair of ticks we fit the exact line through them and count how
+        many of the remaining ticks fall within `max_residual_drop_px`. The
+        model with the most inliers wins (ties broken by lower RMS); the final
+        fit is a least-squares refit over that inlier set. With <= min_ticks
+        points there is nothing to be robust about, so we fall back to a plain
+        least-squares fit over all of them.
+        """
+        if log:
+            ticks = [t for t in ticks if t.value > 0]
+        n = len(ticks)
+        if n <= self.min_ticks:
+            return self._fit_linear(ticks, log=log), list(ticks)
+
+        best_inliers: List[TickLabel] = []
+        best_rms = float("inf")
+        for i in range(n):
+            for j in range(i + 1, n):
+                a, b = ticks[i], ticks[j]
+                # Degenerate pair (same pixel or same value) defines no line.
+                if a.pixel == b.pixel or a.value == b.value:
+                    continue
+                trial = self._fit_linear([a, b], log=log)
+                resid = self._tick_residuals(ticks, trial)
+                inlier_mask = np.abs(resid) <= self.max_residual_drop_px
+                inliers = [t for t, m in zip(ticks, inlier_mask) if m]
+                if len(inliers) < 2:
+                    continue
+                # Tie-break on the spread of the inlier VALUES: a model whose
+                # inliers are a tight, evenly-spaced run is preferred over one
+                # that pairs a gross outlier ("20500") with a real tick. Both
+                # may have ~0 residual on their own 2 points, so residual alone
+                # can't separate them when only a few ticks exist.
+                vals = sorted(t.value for t in inliers)
+                spread = vals[-1] - vals[0]
+                if (len(inliers) > len(best_inliers)
+                        or (len(inliers) == len(best_inliers) and spread < best_rms)):
+                    best_inliers, best_rms = inliers, spread
+        if len(best_inliers) < 2:
+            return self._fit_linear(ticks, log=log), list(ticks)
+        return self._fit_linear(best_inliers, log=log), best_inliers
 
     @staticmethod
     def _fit_linear(ticks: List[TickLabel], log: bool) -> AxisFit:

@@ -487,7 +487,14 @@ _MINERU_WEIGHTS = os.path.join("pp_doclayoutv2_weights", "models", "Layout",
 
 
 def _mineru_weights_dir():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), _MINERU_WEIGHTS)
+    # Weights may live under src/ (packaged layout) or the project root (dev
+    # checkout — the dir is gitignored and stayed at root after the src/ move).
+    here = os.path.dirname(os.path.abspath(__file__))
+    for base in (here, os.path.dirname(here)):
+        cand = os.path.join(base, _MINERU_WEIGHTS)
+        if os.path.isdir(cand):
+            return cand
+    return os.path.join(here, _MINERU_WEIGHTS)
 
 
 def mineru_available():

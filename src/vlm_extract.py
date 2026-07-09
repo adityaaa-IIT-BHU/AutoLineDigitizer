@@ -296,6 +296,8 @@ def main():
         for line in sparse_lines
     ]
 
+    
+
     out_dir = Path(args.out).expanduser() if args.out else img_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = img_path.stem
