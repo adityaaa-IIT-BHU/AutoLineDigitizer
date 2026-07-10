@@ -2295,8 +2295,11 @@ def main(page: ft.Page):
                                        f"{base}_kmds")
                 os.makedirs(out_dir, exist_ok=True)
                 try:
+                    # translate=False: show the English record as soon as it is
+                    # ready; the JA translation runs afterwards in the background.
                     summary = asyncio.run(kmds_parallel.extract_kmds_parallel(
                         app.pdf_path, out_dir, base_name=base, prompt_path=prompt_path,
+                        translate=False,
                     ))
                 except Exception as ex:
                     summary = {"_error": f"{type(ex).__name__}: {ex}"}
@@ -2323,7 +2326,6 @@ def main(page: ft.Page):
                 n_tot = summary.get("n_sections", 0)
                 elapsed = summary.get("elapsed_sec", 0)
                 out_tok = summary.get("output_tokens", 0)
-                tr_ok = (summary.get("translation") or {}).get("ok")
 
                 # Surface WHY sections failed — the UI used to hide this, so a
                 # fast all-fail (bad API key, no model access, rate limit, SSL)
@@ -2338,10 +2340,11 @@ def main(page: ft.Page):
                 conf = ("" if nv is None else
                         ("   |   Schema: ✓ valid" if nv == 0
                          else f"   |   Schema: {nv} violation(s)"))
+                ja_state = "translating in background…" if n_ok else "skipped"
                 kmds_summary_text.value = (
-                    f"Sections OK: {n_ok}/{n_tot}   |   Translation (JA): "
-                    f"{'OK' if tr_ok else 'failed'}{conf}   |   {elapsed:.0f}s, "
-                    f"{out_tok:,} output tokens\nSaved to: {out_dir}{err_line}"
+                    f"Sections OK: {n_ok}/{n_tot}   |   JA: {ja_state}{conf}"
+                    f"   |   {elapsed:.0f}s, {out_tok:,} output tokens\n"
+                    f"Saved to: {out_dir}{err_line}"
                 )
                 kmds_ja_btn.disabled = not kmds_paths["ja"]
                 kmds_title.value = "KMDS metadata (English)"
@@ -2364,6 +2367,25 @@ def main(page: ft.Page):
                         + (f"  ({len(section_errs)} section(s) failed)" if section_errs else "")
                     )
                 page.update()
+
+                # Background JA translation — the EN record is already on screen,
+                # so this no longer blocks the user (it used to add 3+ minutes).
+                if n_ok and kmds_paths["en"]:
+                    ja_target = os.path.join(out_dir, f"{base}_ja.json")
+                    try:
+                        tr = asyncio.run(kmds_parallel.translate_record_file(
+                            kmds_paths["en"], ja_target, prompt_path=prompt_path))
+                    except Exception as ex:
+                        tr = {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
+                    if tr.get("ok"):
+                        kmds_paths["ja"] = ja_target
+                        kmds_ja_btn.disabled = False
+                        ja_result = "OK"
+                    else:
+                        ja_result = f"failed — {tr.get('error')}"
+                    kmds_summary_text.value = kmds_summary_text.value.replace(
+                        "JA: translating in background…", f"JA: {ja_result}", 1)
+                    page.update()
             except Exception as ex:
                 import traceback
                 traceback.print_exc()

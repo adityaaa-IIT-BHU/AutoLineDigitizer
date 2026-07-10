@@ -42,7 +42,8 @@ except ImportError:
     ANTHROPIC_AVAILABLE = False
 
 
-MODEL = "claude-sonnet-4-6"          # user-specified: Sonnet 4.6 for all calls
+MODEL = "claude-sonnet-4-6"          # extraction calls: Sonnet 4.6
+TRANSLATION_MODEL = "claude-haiku-4-5-20251001"  # JA translation is mechanical — Haiku is ~3x faster
 SECTION_MAX_TOKENS = 12000           # headroom for publication + many-figure papers
 TRANSLATION_MAX_TOKENS = 32000       # JA output ≈ EN size (records with passages run large)
 
@@ -721,26 +722,60 @@ async def translate_kmds(en_dict: Dict[str, Any], client,
            "cache_read_tokens": 0, "cache_creation_tokens": 0}
     try:
         resp = await client.messages.create(
-            model=MODEL,
+            model=TRANSLATION_MODEL,
             max_tokens=TRANSLATION_MAX_TOKENS,
             messages=[{"role": "user", "content": [{"type": "text", "text": instruction}]}],
         )
     except Exception as e:  # noqa: BLE001
-        out.update({"ok": False, "error": f"{type(e).__name__}: {e}",
-                    "elapsed_sec": time.time() - t0})
-        return out
+        # Fall back to the extraction model (e.g. no Haiku access / cap mismatch).
+        try:
+            resp = await client.messages.create(
+                model=MODEL,
+                max_tokens=TRANSLATION_MAX_TOKENS,
+                messages=[{"role": "user", "content": [{"type": "text", "text": instruction}]}],
+            )
+        except Exception:
+            out.update({"ok": False, "error": f"{type(e).__name__}: {e}",
+                        "elapsed_sec": time.time() - t0})
+            return out
 
     raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
     ja = _parse_json_block(raw)
+    err = None
+    if ja is None:
+        err = ("translation truncated at max_tokens — record too large"
+               if getattr(resp, "stop_reason", None) == "max_tokens"
+               else "no JSON block parsed from translation")
     out.update(_usage(resp))
     out.update({
         "ok": ja is not None,
         "ja": ja,
         "raw": raw,
-        "error": None if ja is not None else "no JSON block parsed from translation",
+        "error": err,
         "elapsed_sec": time.time() - t0,
     })
     return out
+
+
+async def translate_record_file(en_path: str, ja_path: str,
+                                prompt_path: str = "extraction_prompt.md") -> Dict[str, Any]:
+    """Standalone EN→JA translation of a saved KMDS record (for running in the
+    background after the English record is already shown). Never raises."""
+    try:
+        blocks = load_prompt_blocks(prompt_path)
+        with open(en_path, "r", encoding="utf-8") as f:
+            en_dict = json.load(f)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}", "ja_path": None}
+    async with AsyncAnthropic() as client:
+        tr = await translate_kmds(en_dict, client, blocks["translation"])
+    if tr.get("ok"):
+        with open(ja_path, "w", encoding="utf-8") as f:
+            json.dump(tr["ja"], f, indent=2, ensure_ascii=False)
+        tr["ja_path"] = ja_path
+    else:
+        tr["ja_path"] = None
+    return tr
 
 
 # ===================================================================
@@ -766,8 +801,12 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
                                 prompt_path: str = "extraction_prompt.md",
                                 model: str = MODEL,
                                 schema_path: Optional[str] = None,
-                                use_mineru_text: bool = True) -> Dict[str, Any]:
-    """Run the two-phase KMDS extraction + translation. Returns a summary dict."""
+                                use_mineru_text: bool = True,
+                                translate: bool = True) -> Dict[str, Any]:
+    """Run the two-phase KMDS extraction (+ optional JA translation).
+
+    translate=False skips the JA pass so callers can show the English record
+    immediately and run translate_record_file() in the background."""
     if not ANTHROPIC_AVAILABLE:
         return {"_error": "anthropic SDK not installed. pip install anthropic"}
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -897,9 +936,14 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
                                   "fragment": r["fragment"]} for r in results},
                       f, indent=2, ensure_ascii=False)
 
-        # translation pass (sequential, after gather)
-        print("⤷ Translating EN → JA (1 call)...")
-        tr = await translate_kmds(merged, client, blocks["translation"])
+        # translation pass (sequential, after gather; skippable for fast UI)
+        if translate:
+            print("⤷ Translating EN → JA (1 call)...")
+            tr = await translate_kmds(merged, client, blocks["translation"])
+        else:
+            tr = {"ok": None, "skipped": True, "error": None, "ja": None,
+                  "input_tokens": 0, "output_tokens": 0,
+                  "cache_read_tokens": 0, "cache_creation_tokens": 0}
 
     ja_path = None
     if tr["ok"]:
@@ -907,6 +951,8 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         with open(ja_path, "w", encoding="utf-8") as f:
             json.dump(tr["ja"], f, indent=2, ensure_ascii=False)
         print(f"   ✅ Saved JA: {ja_path}")
+    elif tr.get("skipped"):
+        print("   ⤷ JA translation deferred (run in background by the caller)")
     else:
         print(f"   ⚠ JA translation failed: {tr['error']} (EN saved, continuing)")
 
