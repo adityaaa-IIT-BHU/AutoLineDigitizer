@@ -47,10 +47,11 @@ Download the latest version from the [Releases](https://github.com/adityaaa-IIT-
 
 1. Download and unzip `AutoLineDigitizer-macOS.zip`
 2. Move `AutoLineDigitizer.app` to Applications
-3. On first launch, macOS will show a warning: **"AutoLineDigitizer.app cannot be opened because the developer cannot be verified."**
-   - Click **Cancel** (not "Move to Trash")
-   - Go to **System Settings → Privacy & Security** → scroll down and click **"Open Anyway"**
-   - Or: **Right-click** the app → **Open** → click **Open** in the dialog
+3. On first launch, macOS will warn it **"could not verify the app is free of malware"** (the app is not signed with an Apple Developer ID; it is open source and built by GitHub CI from this repository). Do ONE of:
+   - Double-click the app (it will be blocked, click **Done**, not "Move to Trash") → go to **System Settings → Privacy & Security** → scroll down to *"AutoLineDigitizer was blocked…"* → click **"Open Anyway"**
+   - Or in Terminal, clear the download quarantine flag: `xattr -dr com.apple.quarantine /Applications/AutoLineDigitizer.app`
+
+   (On macOS 15 Sequoia the old right-click → Open trick no longer bypasses the check — use one of the two options above.)
 4. Models will be downloaded automatically on first launch
 
 #### Windows

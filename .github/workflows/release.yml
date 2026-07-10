@@ -223,12 +223,14 @@ jobs:
             #### macOS
             1. Download and unzip `AutoLineDigitizer-macOS.zip`
             2. Move `AutoLineDigitizer.app` to Applications
-            3. Right-click > "Open" (required for first launch)
+            3. **First launch — macOS will warn it "could not verify the app is free of malware"** (the app is not signed with an Apple Developer ID; it is open source and built by GitHub CI from this repository). To open it anyway, do ONE of:
+               - Double-click the app (it will be blocked) → **System Settings → Privacy & Security** → scroll to *"AutoLineDigitizer was blocked…"* → **Open Anyway**; or
+               - In Terminal: `xattr -dr com.apple.quarantine /Applications/AutoLineDigitizer.app`
             4. Models will be downloaded automatically on first launch
 
             #### Windows
             1. Download and unzip `AutoLineDigitizer-Windows.zip`
-            2. Run `AutoLineDigitizer\AutoLineDigitizer.exe`
+            2. Run `AutoLineDigitizer\AutoLineDigitizer.exe` (if SmartScreen warns, click "More info" → "Run anyway")
             3. Models will be downloaded automatically on first launch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
