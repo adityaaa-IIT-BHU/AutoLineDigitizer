@@ -69,7 +69,9 @@ a = Analysis(
         'matplotlib',
         'pycocotools',
         'kmds_editor',
-    ] + distutils_imports + mmcv_imports + collect_submodules('mineru_layout'),
+        'app_settings',
+    ] + distutils_imports + mmcv_imports + collect_submodules('mineru_layout')
+      + collect_submodules('transformers'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

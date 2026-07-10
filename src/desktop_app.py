@@ -117,7 +117,7 @@ except Exception as _kmds_err:
     KMDS_AVAILABLE = False
     print(f"KMDS extraction not available: {_kmds_err}")
 
-GITHUB_REPO = "t29mato/AutoLineDigitizer"
+GITHUB_REPO = "adityaaa-IIT-BHU/AutoLineDigitizer"
 GITHUB_RELEASE_TAG = "models"
 
 MODEL_FILES = {
@@ -128,6 +128,10 @@ MODEL_FILES = {
 MODEL_HASHES = {
     "iter_3000.pth": "ac03d7d52a11ce25",
     "checkpoint.pth": "aef812b0e37faf7c",
+    "lineformer_general.pth": "075f447d51d791cd",
+    "lf_200k_iter9500.pth": "97b66a2115842877",
+    "lineformer_battery_realistic.pth": "4a81e1f7137db9cd",
+    "lineformer_battery_finetuned.pth": "3914e0edea109249",
     "lineformer_battery_iter_5000.pth": "587f492d381674bd",
     "lineformer_battery_best_iter_1300.pth": "e3189abf87a7bff7",
 }
@@ -381,8 +385,13 @@ class LineFormerApp:
             self.current_model_key = model_key
         model_info = LINEFORMER_MODELS[self.current_model_key]
         ckpt = os.path.join(get_models_dir(), model_info["checkpoint"])
-        if not os.path.exists(ckpt) and "huggingface_filename" in model_info:
-            download_finetuned_model(model_info, ckpt, progress_callback)
+        if not os.path.exists(ckpt):
+            if "huggingface_filename" in model_info:
+                download_finetuned_model(model_info, ckpt, progress_callback)
+            else:
+                # everything else is hosted on this repo's "models" release
+                download_model(model_info["checkpoint"], get_models_dir(),
+                               progress_callback)
         CONFIG = os.path.join(LINEFORMER_DIR, "lineformer_swin_t_config.py")
         DEVICE = "cpu"
         infer.load_model(CONFIG, ckpt, DEVICE)
@@ -2635,7 +2644,7 @@ def main(page: ft.Page):
             try:
                 model_info = LINEFORMER_MODELS[key]
                 ckpt_path = os.path.join(get_models_dir(), model_info["checkpoint"])
-                needs_download = not os.path.exists(ckpt_path) and "huggingface_filename" in model_info
+                needs_download = not os.path.exists(ckpt_path)
                 if needs_download:
                     download_progress.visible = True
                     download_progress.value = 0
