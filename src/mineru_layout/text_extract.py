@@ -65,16 +65,45 @@ def _table_markdown(page, bbox_px, zoom: float) -> Optional[str]:
     return None
 
 
+def _crop_png(img: "np.ndarray", bbox, max_dim: int = 1000,
+              pad_px: int = 8) -> Optional[bytes]:
+    """PNG bytes of a layout-block crop, downscaled to cap vision tokens."""
+    try:
+        from PIL import Image
+        import io
+        H, W = img.shape[:2]
+        x0 = max(0, int(bbox[0]) - pad_px); y0 = max(0, int(bbox[1]) - pad_px)
+        x1 = min(W, int(bbox[2]) + pad_px); y1 = min(H, int(bbox[3]) + pad_px)
+        if x1 - x0 < 20 or y1 - y0 < 20:
+            return None
+        pil = Image.fromarray(img[y0:y1, x0:x1])
+        if max(pil.size) > max_dim:
+            s = max_dim / max(pil.size)
+            pil = pil.resize((int(pil.width * s), int(pil.height * s)))
+        buf = io.BytesIO()
+        pil.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
 def pdf_to_markdown(pdf_path: str, detector, dpi: int = 200,
                     max_pages: Optional[int] = None,
-                    include_references: bool = False) -> Optional[Dict]:
+                    include_references: bool = True,
+                    return_figures: bool = False) -> Optional[Dict]:
     """
-    Convert a born-digital PDF into reading-ordered markdown.
+    Convert a born-digital PDF into reading-ordered markdown — everything the
+    paper contains: body text, titles, captions, tables, footnotes, and (by
+    default) the reference list.
 
     detector: a mineru_layout.ChartDetector (its .detect_layout() returns
         PP-DocLayoutV2 blocks already sorted by the reading-order head).
-    Returns {"markdown", "n_pages", "n_blocks", "n_figures", "n_tables"} or
-    None when the PDF has no usable text layer (scanned — use the vision path).
+    return_figures: also return PNG crops of every figure/chart/table block —
+        each crop k corresponds to a `*[FIGURE k …]*` / `*[TABLE crop k …]*`
+        marker in the markdown, so a vision model can match image to context.
+    Returns {"markdown", "n_pages", "n_blocks", "n_figures", "n_tables",
+    "figures": [{"index","page","label","png"}...]} or None when the PDF has
+    no usable text layer (scanned — use the vision path).
     """
     if fitz is None:
         return None
@@ -93,6 +122,7 @@ def pdf_to_markdown(pdf_path: str, detector, dpi: int = 200,
     out: List[str] = []
     n_blocks = n_figs = n_tabs = 0
     refs_seen = False
+    figures: List[Dict] = []
 
     for pno in range(n_pages):
         page = doc[pno]
@@ -116,6 +146,15 @@ def pdf_to_markdown(pdf_path: str, detector, dpi: int = 200,
                     continue
             if label in _FIGURE_LABELS:
                 n_figs += 1
+                if return_figures:
+                    png = _crop_png(img, bbox)
+                    if png is not None:
+                        figures.append({"index": len(figures) + 1, "page": pno + 1,
+                                        "label": label, "png": png})
+                        page_parts.append(
+                            f"*[FIGURE {len(figures)} ({label}) — page {pno + 1}; "
+                            f"crop attached — see caption below/above]*")
+                        continue
                 page_parts.append(f"*[{label.upper()} on page {pno + 1} — see caption below/above]*")
                 continue
             if label == "inline_formula":
@@ -123,6 +162,13 @@ def pdf_to_markdown(pdf_path: str, detector, dpi: int = 200,
 
             if label == "table":
                 n_tabs += 1
+                if return_figures:
+                    png = _crop_png(img, bbox)
+                    if png is not None:
+                        figures.append({"index": len(figures) + 1, "page": pno + 1,
+                                        "label": "table", "png": png})
+                        page_parts.append(
+                            f"*[TABLE crop {len(figures)} — page {pno + 1}; crop attached]*")
                 md = _table_markdown(page, bbox, zoom)
                 if md is None:
                     raw = _block_text(page, bbox, zoom)
@@ -169,4 +215,5 @@ def pdf_to_markdown(pdf_path: str, detector, dpi: int = 200,
         "n_blocks": n_blocks,
         "n_figures": n_figs,
         "n_tables": n_tabs,
+        "figures": figures,
     }

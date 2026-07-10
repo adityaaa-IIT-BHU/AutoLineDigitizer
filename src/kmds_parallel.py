@@ -115,8 +115,9 @@ SUB_PROMPTS: Dict[str, str] = {
         "1. `metadata` — all six required fields plus `rights`, and `metadata.publication` "
         "with the bibliography (DOI, title, authors[] with roles/affiliations, journal, "
         "year, dates, volume/issue/pages, `abstract` copied from the printed abstract, "
-        "type, open access status), `scope` (paradigms, purposes, approaches, "
-        "conclusions[], classifications, comments), and `samples[]`.\n"
+        "type, open access status, and `references` = the DOIs printed in the reference "
+        "list — skip entries without a printed DOI), `scope` (paradigms, purposes, "
+        "approaches, conclusions[], classifications, comments), and `samples[]`.\n"
         "2. Top-level `system` (null unless a `name` enum member genuinely applies).\n"
         "3. Top-level `materials` — a NAMESPACE ONLY: one `{id, name}` entry per distinct "
         "material system/composition originally studied in this paper, ids `material_01`, "
@@ -508,13 +509,15 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
                               section_schema: Optional[Dict[str, Any]] = None,
                               model: str = MODEL,
                               context_digest: Optional[str] = None,
-                              paper_text: Optional[str] = None) -> Dict[str, Any]:
+                              paper_text: Optional[str] = None,
+                              paper_figures: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """One focused Claude call for a single KMDS section. Never raises.
 
     paper_text: MinerU-extracted markdown of the paper. When given, this call
-    sends the markdown INSTEAD of the PDF (cheaper, reading-order-clean) —
-    except data_sources, which always gets the PDF because it must SEE the
-    figures to describe axes/colors/markers.
+    sends the markdown INSTEAD of the PDF (cheaper, reading-order-clean).
+    paper_figures: MinerU figure/table crops ({"index","page","label","png"}).
+    data_sources needs to SEE figures — it gets markdown + labeled crops when
+    available, else the raw PDF.
     """
     t0 = time.time()
 
@@ -553,14 +556,32 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
     else:
         instruction += "\nOutput the JSON in a single ```json code block and nothing else."
 
-    use_markdown = paper_text is not None and section_key != "data_sources"
+    crops = paper_figures if (section_key == "data_sources" and paper_figures
+                              and 0 < len(paper_figures) <= MAX_FIGURE_CROPS) else None
+    use_markdown = paper_text is not None and (section_key != "data_sources" or crops)
+
+    figure_blocks: List[Dict[str, Any]] = []
     if use_markdown:
         paper_block = {
             "type": "text",
-            "text": ("## PAPER (MinerU-extracted markdown, reading order; figure "
-                     "images not included — captions are)\n\n" + paper_text),
+            "text": ("## PAPER (MinerU-extracted markdown, reading order)\n\n" + paper_text),
             "cache_control": {"type": "ephemeral", "ttl": "1h"},
         }
+        if crops:
+            instruction = (
+                "## Attached figure/table crops\n"
+                "After the paper markdown, every figure/chart/table is attached as a "
+                "cropped image, in order. Each crop k corresponds to the `*[FIGURE k …]*` "
+                "or `*[TABLE crop k …]*` marker at its position in the markdown — use the "
+                "markers to match each image to its caption and page.\n\n" + instruction
+            )
+            for fig in crops:
+                figure_blocks.append({"type": "text",
+                                      "text": f"FIGURE {fig['index']} ({fig['label']}) — "
+                                              f"page {fig['page']}:"})
+                figure_blocks.append({"type": "image",
+                                      "source": {"type": "base64", "media_type": "image/png",
+                                                 "data": base64.standard_b64encode(fig["png"]).decode()}})
     else:
         paper_block = {
             "type": "document",
@@ -569,6 +590,7 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
         }
     content = [
         paper_block,
+        *figure_blocks,
         {"type": "text", "text": instruction,
          "cache_control": {"type": "ephemeral", "ttl": "1h"}},
     ]
@@ -720,20 +742,23 @@ async def translate_kmds(en_dict: Dict[str, Any], client,
 
     out = {"ja": None, "raw": None, "input_tokens": 0, "output_tokens": 0,
            "cache_read_tokens": 0, "cache_creation_tokens": 0}
-    try:
-        resp = await client.messages.create(
-            model=TRANSLATION_MODEL,
+
+    async def _stream(model_id):
+        # 32k max_tokens exceeds the SDK's 10-minute non-streaming limit —
+        # stream and accumulate instead.
+        async with client.messages.stream(
+            model=model_id,
             max_tokens=TRANSLATION_MAX_TOKENS,
             messages=[{"role": "user", "content": [{"type": "text", "text": instruction}]}],
-        )
+        ) as s:
+            return await s.get_final_message()
+
+    try:
+        resp = await _stream(TRANSLATION_MODEL)
     except Exception as e:  # noqa: BLE001
-        # Fall back to the extraction model (e.g. no Haiku access / cap mismatch).
+        # Fall back to the extraction model (e.g. no Haiku access).
         try:
-            resp = await client.messages.create(
-                model=MODEL,
-                max_tokens=TRANSLATION_MAX_TOKENS,
-                messages=[{"role": "user", "content": [{"type": "text", "text": instruction}]}],
-            )
+            resp = await _stream(MODEL)
         except Exception:
             out.update({"ok": False, "error": f"{type(e).__name__}: {e}",
                         "elapsed_sec": time.time() - t0})
@@ -782,15 +807,20 @@ async def translate_record_file(en_path: str, ja_path: str,
 # Top-level orchestrator
 # ===================================================================
 
+MAX_FIGURE_CROPS = 40  # above this, data_sources falls back to the raw PDF
+
+
 def _mineru_paper_markdown(pdf_path: str) -> Optional[Dict[str, Any]]:
-    """MinerU text extraction (layout + reading order + text layer). Returns the
-    pdf_to_markdown result dict, or None on any unavailability — never raises."""
+    """MinerU full extraction (layout + reading order + text layer + figure/table
+    crops). Returns the pdf_to_markdown result dict, or None on any
+    unavailability — never raises."""
     try:
         from mineru_layout.text_extract import pdf_to_markdown
         from pdf_figures import mineru_available, _load_mineru
         if not mineru_available():
             return None
-        return pdf_to_markdown(pdf_path, detector=_load_mineru())
+        return pdf_to_markdown(pdf_path, detector=_load_mineru(),
+                               include_references=True, return_figures=True)
     except Exception as e:  # noqa: BLE001 — markdown is an optimization, not a requirement
         print(f"   ⚠ MinerU text extraction failed ({type(e).__name__}: {e}) — raw-PDF fallback")
         return None
@@ -842,18 +872,23 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
     # MinerU text extraction: LLM-ready markdown for the text-based calls
     # (core + materials_*). data_sources always keeps the PDF (needs vision).
     paper_text = None
+    paper_figures = None
     md_info = _mineru_paper_markdown(pdf_path) if use_mineru_text else None
     if md_info and md_info.get("markdown"):
         paper_text = md_info["markdown"]
+        paper_figures = md_info.get("figures") or None
         md_path = os.path.join(output_dir, f"{base_name}_paper.md")
         try:
             with open(md_path, "w", encoding="utf-8") as f:
                 f.write(paper_text)
         except OSError:
             md_path = None
-        print(f"⤷ MinerU text: {md_info['n_pages']} pages → {len(paper_text)//1000}k chars "
-              f"({md_info['n_blocks']} blocks, {md_info['n_figures']} figures, "
-              f"{md_info['n_tables']} tables){' -> ' + md_path if md_path else ''}")
+        print(f"⤷ MinerU: {md_info['n_pages']} pages → {len(paper_text)//1000}k chars markdown "
+              f"+ {len(paper_figures or [])} figure/table crops "
+              f"({md_info['n_blocks']} text blocks){' -> ' + md_path if md_path else ''}")
+        if paper_figures and len(paper_figures) > MAX_FIGURE_CROPS:
+            print(f"   ⚠ {len(paper_figures)} crops > {MAX_FIGURE_CROPS} cap — "
+                  f"data_sources will use the raw PDF instead")
     elif use_mineru_text:
         print("⤷ MinerU text unavailable (weights missing or scanned PDF) — raw PDF for all calls")
 
@@ -881,7 +916,8 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         p2 = await asyncio.gather(
             *(extract_one_section(pdf_b64, key, client, blocks,
                                   section_schema=section_schemas.get(key), model=model,
-                                  context_digest=digest, paper_text=paper_text)
+                                  context_digest=digest, paper_text=paper_text,
+                                  paper_figures=paper_figures)
               for key in phase2_keys)
         )
         results.extend(p2)
