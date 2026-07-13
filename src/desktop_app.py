@@ -254,7 +254,7 @@ class LineFormerApp:
         self.cached_plot_area = None
 
         self.sort_mode = "mean_y_desc"
-        self.downsample_mode = "max_points"
+        self.downsample_mode = "none"
         self.fixed_step = 10
         self.max_points = 20
         self.auto_axis = True
@@ -980,16 +980,21 @@ def image_to_base64(img):
 
 
 def main(page: ft.Page):
-    # ---- Editorial palette (mirrors the KMDS paper viewer) ----
-    ACCENT = "#B5402F"      # terracotta — primary actions / accents
-    ACCENT_2 = "#1B4D3E"    # deep green — secondary
-    GOLD = "#C08A2D"
-    PAPER = "#F7F2E9"       # warm page background
-    PAPER_2 = "#EFE7D6"     # subtle panel tint
+    # ---- Daylight-blue palette (light, StarryDigitizer-inspired accents) ----
+    ACCENT = "#3B6FE0"      # cornflower blue — primary actions / accents
+    ACCENT_2 = "#1193A8"    # teal — secondary
+    GOLD = "#D99A2B"        # star gold — brand highlights
+    PAPER = "#F0F4FD"       # soft blue-white page background
+    PAPER_2 = "#E4EBFA"     # subtle panel tint
     SURFACE = "#FFFFFF"     # cards
-    INK = "#2A2622"
-    INK_3 = "#6B6258"
-    RULE = "#D8CDB8"
+    SURFACE_2 = "#F4F7FF"   # inset wells (image frames, gallery strip, table)
+    INK = "#1C2440"         # navy ink text
+    INK_3 = "#61708F"       # muted slate-blue text
+    RULE = "#D7E0F2"        # hairlines / borders
+    SELECT = "#E3ECFF"      # selected row / tile background
+    OK = "#178A50"          # success status
+    WARN = "#C77700"        # warning status
+    ERR = "#D6455D"         # error status
 
     page.title = "AutoLineDigitizer"
     page.theme_mode = ft.ThemeMode.LIGHT
@@ -1001,11 +1006,33 @@ def main(page: ft.Page):
     page.window.min_height = 680
     page.padding = 0
 
-    def _section_label(txt):
-        return ft.Text(txt.upper(), size=11, weight=ft.FontWeight.BOLD, color=ACCENT)
+    def _section_header(icon, txt):
+        return ft.Row([
+            ft.Icon(icon, size=14, color=ACCENT),
+            ft.Text(txt.upper(), size=11, weight=ft.FontWeight.BOLD, color=ACCENT,
+                    style=ft.TextStyle(letter_spacing=1.2)),
+        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     def _soft_divider():
         return ft.Divider(height=14, thickness=1, color=RULE)
+
+    def _card_shadow():
+        # NB: flet parses 8-digit hex as #AARRGGBB — alpha comes first.
+        return ft.BoxShadow(blur_radius=16, spread_radius=0,
+                            color="#26202A55", offset=ft.Offset(0, 5))
+
+    def _status_pill(*controls):
+        return ft.Container(
+            content=ft.Row(list(controls), spacing=6,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=SURFACE_2, border=ft.border.all(1, RULE), border_radius=8,
+            padding=ft.padding.symmetric(horizontal=8, vertical=6))
+
+    def _vsep():
+        return ft.Container(width=1, height=26, bgcolor=RULE,
+                            margin=ft.margin.symmetric(horizontal=2))
+
+    _btn_shape = ft.RoundedRectangleBorder(radius=10)
 
     app = LineFormerApp()
 
@@ -1029,26 +1056,28 @@ def main(page: ft.Page):
     loupe_box = ft.Container(
         content=loupe_image, width=LOUPE_SIZE, height=LOUPE_SIZE,
         visible=False, left=0, top=0,
-        border=ft.border.all(2, ft.colors.BLUE_GREY_400),
+        border=ft.border.all(2, ACCENT),
         border_radius=LOUPE_SIZE // 2,
         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
     )
 
     # ---- PDF figure gallery (populated when a PDF is opened) ----
     THUMB_W = 150
-    pdf_gallery_title = ft.Text("", size=13, weight=ft.FontWeight.BOLD)
+    pdf_gallery_title = ft.Text("", size=13, weight=ft.FontWeight.BOLD, color=INK)
     pdf_gallery_hint = ft.Text("Click a figure to extract and edit it.",
-                               size=11, color=ft.colors.GREY_600)
+                               size=11, color=INK_3)
     pdf_gallery_row = ft.Row(spacing=8, scroll=ft.ScrollMode.AUTO, wrap=False)
     pdf_gallery = ft.Container(
         content=ft.Column([
-            pdf_gallery_title, pdf_gallery_hint,
+            ft.Row([ft.Icon(ft.icons.COLLECTIONS_OUTLINED, size=15, color=ACCENT),
+                    pdf_gallery_title], spacing=6),
+            pdf_gallery_hint,
             ft.Container(content=pdf_gallery_row, height=THUMB_W + 30,
                          padding=6, border=ft.border.all(1, RULE),
-                         border_radius=10, bgcolor="#FFFFFF"),
+                         border_radius=10, bgcolor=SURFACE_2),
         ], spacing=6),
         visible=False, padding=14, bgcolor=SURFACE, border_radius=14,
-        border=ft.border.all(1, RULE),
+        border=ft.border.all(1, RULE), shadow=_card_shadow(),
     )
 
     # Recrop button (enabled only for figures sourced from a PDF page).
@@ -1097,7 +1126,7 @@ def main(page: ft.Page):
         "Extract Metadata (KMDS)", icon=ft.icons.DATASET, disabled=True,
         tooltip="Run the parallel KMDS extraction on the open PDF: bibliography, "
                 "materials, process, properties, figures -> structured EN + JA JSON. "
-                "Takes ~60-90s and uses the Anthropic API."
+                "Takes ~2-3 min and uses the Anthropic API."
                 if KMDS_AVAILABLE else "Needs ANTHROPIC_API_KEY + anthropic SDK.",
     )
 
@@ -1117,7 +1146,7 @@ def main(page: ft.Page):
     # KMDS results render INLINE (not a dialog) — updating inline controls from
     # a worker thread is the pattern that already works elsewhere in this app.
     kmds_paths = {"en": None, "ja": None, "dir": None, "current": None}
-    kmds_title = ft.Text("KMDS metadata", size=16, weight=ft.FontWeight.BOLD)
+    kmds_title = ft.Text("KMDS metadata", size=16, weight=ft.FontWeight.BOLD, color=INK)
     kmds_summary_text = ft.Text("", size=12, selectable=True)
     kmds_en_btn = ft.TextButton("English")
     kmds_ja_btn = ft.TextButton("日本語")
@@ -1126,7 +1155,7 @@ def main(page: ft.Page):
     kmds_save_btn = ft.FilledTonalButton("Save edits", icon=ft.icons.SAVE, disabled=True)
     kmds_download_btn = ft.OutlinedButton("Download JSON…", icon=ft.icons.DOWNLOAD,
                                           disabled=True)
-    kmds_edit_status = ft.Text("", size=12, color=ft.colors.GREY_700, selectable=True)
+    kmds_edit_status = ft.Text("", size=12, color=INK_3, selectable=True)
     kmds_json_view = ft.TextField(
         value="", read_only=True, multiline=True, min_lines=16, max_lines=22,
         text_size=11,
@@ -1141,7 +1170,8 @@ def main(page: ft.Page):
     ], height=500)
     kmds_panel = ft.Container(
         content=ft.Column([
-            ft.Row([kmds_title, ft.Container(expand=True),
+            ft.Row([ft.Icon(ft.icons.DATASET_OUTLINED, size=18, color=ACCENT),
+                    kmds_title, ft.Container(expand=True),
                     kmds_en_btn, kmds_ja_btn, kmds_openfolder_btn, kmds_close_btn]),
             kmds_summary_text,
             ft.Row([kmds_save_btn, kmds_download_btn, kmds_edit_status]),
@@ -1149,11 +1179,11 @@ def main(page: ft.Page):
         ], spacing=6),
         visible=False, padding=14,
         border=ft.border.all(1, RULE), border_radius=14,
-        bgcolor=SURFACE,
+        bgcolor=SURFACE, shadow=_card_shadow(),
     )
 
-    info_text = ft.Text("", size=14)
-    axis_info_text = ft.Text("", size=12, color=ft.colors.GREY_700)
+    info_text = ft.Text("", size=13, weight=ft.FontWeight.W_500, color=INK)
+    axis_info_text = ft.Text("", size=12, color=INK_3)
 
     axis_model_dropdown = ft.Dropdown(
         label="Axis Model", value="chartdete", width=200,
@@ -1175,12 +1205,12 @@ def main(page: ft.Page):
     )
 
     downsample_dropdown = ft.Dropdown(
-        label="Downsampling", value="max_points", width=200,
+        label="Downsampling", value="none", width=200,
         options=[
+            ft.dropdown.Option("none", "None"),
             ft.dropdown.Option("max_points", "Max Points"),
             ft.dropdown.Option("arc_length", "Arc Length"),
             ft.dropdown.Option("fixed", "Fixed Step"),
-            ft.dropdown.Option("none", "None"),
         ],
     )
 
@@ -1189,8 +1219,9 @@ def main(page: ft.Page):
     fixed_step_label = ft.Text("Step: 10", size=12, visible=False)
     fixed_step_slider = ft.Slider(min=1, max=50, value=10, divisions=49, label="{value}", width=200, visible=False)
 
-    detected_lines_title = ft.Text("Detected Lines", size=14, weight=ft.FontWeight.BOLD, visible=False)
-    detected_lines_hint = ft.Text("Click a line to edit it", size=11, color=ft.colors.GREY_600, visible=False)
+    detected_lines_title = ft.Text("Detected Lines", size=13, weight=ft.FontWeight.BOLD,
+                                   color=INK, visible=False)
+    detected_lines_hint = ft.Text("Click a line to edit it", size=11, color=INK_3, visible=False)
     detected_lines_column = ft.Column(spacing=2, tight=True)
 
     # ---- Manual editing panel ----
@@ -1199,12 +1230,12 @@ def main(page: ft.Page):
     add_btn = ft.OutlinedButton("Add", icon=ft.icons.TIMELINE)
     eraser_label = ft.Text("Eraser radius: 18", size=11, visible=False)
     eraser_slider = ft.Slider(min=6, max=40, value=18, divisions=34, label="{value}", width=200, visible=False)
-    add_hint = ft.Text("", size=11, color=ft.colors.GREY_600, visible=False)
+    add_hint = ft.Text("", size=11, color=INK_3, visible=False)
     apply_btn = ft.OutlinedButton("Apply spline", icon=ft.icons.CHECK, visible=False)
     undo_anchor_btn = ft.TextButton("Undo last point", visible=False)
     delete_line_btn = ft.OutlinedButton(
         "Delete Line", icon=ft.icons.DELETE_OUTLINE,
-        style=ft.ButtonStyle(color=ft.colors.RED_700),
+        style=ft.ButtonStyle(color=ERR, shape=_btn_shape),
     )
     done_btn = ft.OutlinedButton("Done editing", icon=ft.icons.DONE_ALL)
     edit_panel = ft.Column([
@@ -1213,13 +1244,13 @@ def main(page: ft.Page):
         eraser_label, eraser_slider,
         add_hint,
         ft.Row([apply_btn, undo_anchor_btn], spacing=6),
-        ft.Divider(height=4, color=ft.colors.GREY_300),
+        ft.Divider(height=4, color=RULE),
         delete_line_btn,
         done_btn,
     ], spacing=6, visible=False)
 
     # ---- Data table section (NEW) ----
-    data_table_title = ft.Text("Data Table", size=16, weight=ft.FontWeight.BOLD)
+    data_table_title = ft.Text("Data Table", size=16, weight=ft.FontWeight.BOLD, color=INK)
     x_axis_name_field = ft.TextField(label="X axis name", value="", width=200, dense=True,
                                      hint_text="e.g. Cycle number")
     y_axis_name_field = ft.TextField(label="Y axis name", value="", width=200, dense=True,
@@ -1232,17 +1263,20 @@ def main(page: ft.Page):
     data_table = ft.DataTable(
         columns=[ft.DataColumn(ft.Text("(load an image to see data)"))],
         rows=[],
-        column_spacing=18, heading_row_height=36,
-        data_row_min_height=28, data_row_max_height=32,
-        divider_thickness=0.5,
+        column_spacing=18, heading_row_height=38,
+        data_row_min_height=30, data_row_max_height=34,
+        heading_row_color=SELECT,
+        heading_text_style=ft.TextStyle(weight=ft.FontWeight.W_600, color=INK),
+        horizontal_lines=ft.BorderSide(0.5, RULE),
     )
     data_table_scroll = ft.Container(
         content=ft.Row([data_table], scroll=ft.ScrollMode.AUTO),
-        height=320, padding=4,
-        border=ft.border.all(1, ft.colors.GREY_300),
-        border_radius=6,
+        height=320, padding=6,
+        bgcolor=SURFACE_2,
+        border=ft.border.all(1, RULE),
+        border_radius=10,
     )
-    table_row_count_text = ft.Text("", size=11, color=ft.colors.GREY_600)
+    table_row_count_text = ft.Text("", size=11, color=INK_3)
 
     def _bgr_to_hex(bgr):
         b, g, r = int(bgr[0]), int(bgr[1]), int(bgr[2])
@@ -1490,7 +1524,7 @@ def main(page: ft.Page):
         confirm_delete_dialog.actions = [
             ft.TextButton("Cancel", on_click=lambda e: _close_dialog()),
             ft.TextButton("Delete", on_click=_confirm_delete_yes,
-                          style=ft.ButtonStyle(color=ft.colors.RED_700)),
+                          style=ft.ButtonStyle(color=ERR)),
         ]
         page.dialog = confirm_delete_dialog
         confirm_delete_dialog.open = True
@@ -1515,11 +1549,13 @@ def main(page: ft.Page):
             return
         colors = list(line_utils.get_distinct_colors(len(app.data_series)))
         for idx, series in enumerate(app.data_series):
-            swatch = ft.Container(width=14, height=14,
+            swatch = ft.Container(width=12, height=12,
                                   bgcolor=_bgr_to_hex(colors[idx]),
-                                  border_radius=3,
-                                  border=ft.border.all(1, ft.colors.GREY_400))
-            label = ft.Text(f"{app.line_name(idx)} ({len(series['points'])} pts)", size=12)
+                                  border_radius=6,
+                                  border=ft.border.all(1, RULE))
+            name = ft.Text(app.line_name(idx), size=12,
+                           weight=ft.FontWeight.W_500, color=INK)
+            pts = ft.Text(f"{len(series['points'])} pts", size=10, color=INK_3)
             selected = (idx == app.selected_line_idx)
 
             def on_hover(e, _idx=idx):
@@ -1530,10 +1566,13 @@ def main(page: ft.Page):
                 select_line(_idx)
 
             row = ft.Container(
-                content=ft.Row([swatch, label], spacing=8, tight=True),
-                padding=ft.padding.symmetric(horizontal=6, vertical=4),
-                border_radius=4,
-                bgcolor=ft.colors.BLUE_50 if selected else None,
+                content=ft.Row([swatch, name, ft.Container(expand=True), pts],
+                               spacing=8,
+                               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.padding.symmetric(horizontal=8, vertical=6),
+                border_radius=8,
+                bgcolor=SELECT if selected else None,
+                border=ft.border.all(1, ACCENT if selected else "#00000000"),
                 on_hover=on_hover, on_click=on_click_row, ink=True,
             )
             detected_lines_column.controls.append(row)
@@ -1782,6 +1821,12 @@ def main(page: ft.Page):
         page.update()
 
     def load_image(img, image_path=None, figure_idx=None):
+        # Auto-stage the outgoing figure's digitization before switching, so
+        # axes + curves reach the paper record without a manual save.
+        try:
+            _stage_current_figure(silent=True)
+        except Exception:  # noqa: BLE001 — staging must never block image loading
+            pass
         app.current_image = img
         app.current_image_path = image_path
         app.cached_plot_area = None
@@ -1863,12 +1908,12 @@ def main(page: ft.Page):
                     ft.Image(src_base64=thumb_b64, width=THUMB_W,
                              fit=ft.ImageFit.FIT_WIDTH),
                     ft.Text(label, size=10, no_wrap=True,
-                            color=ft.colors.GREY_700),
-                ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
-                padding=4, border_radius=6,
-                bgcolor=ft.colors.BLUE_50 if selected else None,
-                border=ft.border.all(2, ft.colors.BLUE_400 if selected
-                                     else ft.colors.GREY_300),
+                            color=INK_3),
+                ], spacing=3, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
+                padding=6, border_radius=10,
+                bgcolor=SELECT if selected else SURFACE,
+                border=ft.border.all(2, ACCENT if selected
+                                     else RULE),
                 on_click=lambda e, _i=idx: on_thumbnail_click(_i),
                 ink=True, tooltip=caption or label,
             )
@@ -1964,7 +2009,7 @@ def main(page: ft.Page):
 
     recrop_image = ft.Image(width=RECROP_DISP_W, fit=ft.ImageFit.FIT_WIDTH)
     recrop_status = ft.Text("Drag a rectangle over the chart, then Apply crop.",
-                            size=12, color=ft.colors.GREY_700)
+                            size=12, color=INK_3)
     recrop_dialog = ft.AlertDialog(modal=True, title=ft.Text("Recrop figure"))
 
     def _render_recrop_overlay():
@@ -2103,7 +2148,7 @@ def main(page: ft.Page):
     ], tight=True, scroll=ft.ScrollMode.AUTO, width=RECROP_DISP_W + 20, height=620)
     recrop_dialog.actions = [
         ft.TextButton("Cancel", on_click=lambda e: _close_recrop()),
-        ft.ElevatedButton("Apply crop", icon=ft.icons.CHECK, on_click=on_recrop_apply),
+        ft.FilledButton("Apply crop", icon=ft.icons.CHECK, on_click=on_recrop_apply),
     ]
     recrop_btn.on_click = on_recrop_click
 
@@ -2277,7 +2322,7 @@ def main(page: ft.Page):
                     break
                 process_status_text.value = (
                     f"⏳ Extracting KMDS metadata… {el:0.0f}s elapsed "
-                    f"(typically 60–90s). Please wait — do not close."
+                    f"(typically 2–3 min). Please wait — do not close."
                 )
                 page.update()
                 _time.sleep(1.0)
@@ -2409,11 +2454,15 @@ def main(page: ft.Page):
     kmds_btn.on_click = on_kmds_click
 
     # ---- Paper-record handoff (native digitizer -> KMDS viewer) ----
-    def on_save_fig_to_record(_):
+    def _stage_current_figure(silent=False):
+        """Snapshot the currently open figure's axes + digitized series into
+        app.fig_digitizations. Called automatically on figure switch and when
+        the record is opened, so nothing is lost without pressing a button.
+        Returns the staged label, or None if there is nothing to stage."""
         if app.current_image is None or not app.data_series:
-            process_status_text.value = "Digitize a figure first, then save it to the record."
-            page.update()
-            return
+            return None
+        if silent and not app.axis_config:
+            return None   # auto-mode: skip uncalibrated figures quietly
         x_name = (x_axis_name_field.value or "").strip() or "X"
         y_name = (y_axis_name_field.value or "").strip() or "Y"
         series = []
@@ -2437,14 +2486,23 @@ def main(page: ft.Page):
         }
         if not kmds_clock.get("running"):
             open_record_btn.disabled = False   # something to view now
+        return label
+
+    def on_save_fig_to_record(_):
+        label = _stage_current_figure(silent=False)
+        if label is None:
+            process_status_text.value = "Digitize a figure first, then save it to the record."
+            page.update()
+            return
         process_status_text.value = (
             f"Staged “{label}” → record ({len(app.fig_digitizations)} figure(s) staged). "
-            f"Press “Open Paper Record” when done."
+            f"Figures are also saved automatically — press “Open Paper Record” when done."
         )
         page.update()
 
     def _build_paper_record_html():
         import copy, re
+        _stage_current_figure(silent=True)   # capture the open figure's latest state
         record = copy.deepcopy(app.kmds_record) if app.kmds_record else {"metadata": {"publication": {"figures": []}}}
         pub = record.setdefault("metadata", {}).setdefault("publication", {})
         figs = pub.get("figures")
@@ -2455,6 +2513,41 @@ def main(page: ft.Page):
         def _first_int(s):
             m = re.search(r"\d+", str(s or ""))
             return int(m.group()) if m else None
+
+        def _words(s):
+            return set(re.findall(r"[a-zA-Zα-ωΑ-Ω]+", str(s or "").lower())) - {"the", "of", "a"}
+
+        def _graph_score(dig, g, xs, ys):
+            """How well a digitization fits one KMDS graph: axis-name word
+            overlap + digitized-range vs reference-tick overlap. Distinguishes
+            the panels of a multi-panel figure."""
+            axes = {str(a.get("axis") or "").lower(): a
+                    for a in (g.get("axes") or []) if isinstance(a, dict)}
+
+            def name_score(name, ax):
+                if not ax:
+                    return 0.0
+                q = ax.get("quantity") or {}
+                w = _words(q.get("term")) | _words(ax.get("unit"))
+                d = _words(name)
+                return len(d & w) / len(d) if d and w else 0.0
+
+            def range_score(vals, ax):
+                ticks = [t for t in ((ax or {}).get("reference ticks") or [])
+                         if isinstance(t, (int, float))]
+                if not ticks or not vals:
+                    return 0.0
+                lo, hi, dlo, dhi = min(ticks), max(ticks), min(vals), max(vals)
+                if hi <= lo or dhi <= dlo:
+                    return 0.0
+                inter = min(hi, dhi) - max(lo, dlo)
+                union = max(hi, dhi) - min(lo, dlo)
+                return max(0.0, inter / union)
+
+            return (name_score(dig["x_name"], axes.get("x"))
+                    + 1.5 * name_score(dig["y_name"], axes.get("y"))
+                    + 0.75 * range_score(ys, axes.get("y"))
+                    + 0.5 * range_score(xs, axes.get("x")))
 
         for _key, dig in app.fig_digitizations.items():
             n = _first_int(dig["label"])
@@ -2482,25 +2575,36 @@ def main(page: ft.Page):
                             "points_data": s} for i, s in enumerate(dig["series"])],
                 "provenance": {"page": dig["page"], "n_lines": dig["n_lines"], "n_points": dig["n_points"]},
             }
-            target["digitization_data"] = dd
-            # The viewer renders digitization inside a GRAPH (with axis cards), so
-            # ensure the figure has a graph carrying it — create one if needed.
+            # Attach the digitization to the RIGHT graph of the figure — score
+            # every free panel by axis-name + value-range fit instead of
+            # clobbering graphs[0]; unmatched digitizations get their own graph.
             if not isinstance(target.get("graphs"), list):
                 target["graphs"] = []
-            graph = target["graphs"][0] if target["graphs"] else None
-            if graph is None:
-                graph = {"graph local id": dig["label"], "graph name": dig["label"],
-                         "caption summary": "", "samples": [], "description": ""}
-                target["graphs"].append(graph)
-            if not graph.get("axes"):
-                graph["axes"] = [
-                    {"axis": "X", "quantity": {"term": dig["x_name"]}, "unit": "",
-                     "scale": "log" if dig["is_log_x"] else "linear", "reference ticks": []},
-                    {"axis": "Y", "quantity": {"term": dig["y_name"]}, "unit": "",
-                     "scale": "log" if dig["is_log_y"] else "linear", "reference ticks": []},
-                ]
-            graph["digitization"] = summary
-            graph["digitization_data"] = dd
+            xs = [p[0] for s in dig["series"] for p in s if len(p) == 2]
+            ys = [p[1] for s in dig["series"] for p in s if len(p) == 2]
+            best, best_score = None, 0.0
+            for g in target["graphs"]:
+                if not isinstance(g, dict) or g.get("digitization_data"):
+                    continue   # one digitization per graph — never overwrite
+                sc = _graph_score(dig, g, xs, ys)
+                if sc > best_score:
+                    best, best_score = g, sc
+            if best is None or best_score < 0.35:
+                best = {"graph local id": dig["label"], "graph name": dig["label"],
+                        "subfigure label": None, "caption summary": "",
+                        "samples": [], "structure": None,
+                        "description": "(digitized in AutoLineDigitizer)",
+                        "axes": [
+                            {"axis": "x", "quantity": {"term": dig["x_name"]}, "unit": "",
+                             "scale": "log" if dig["is_log_x"] else "linear",
+                             "reference ticks": []},
+                            {"axis": "y", "quantity": {"term": dig["y_name"]}, "unit": "",
+                             "scale": "log" if dig["is_log_y"] else "linear",
+                             "reference ticks": []},
+                        ]}
+                target["graphs"].append(best)
+            best["digitization"] = summary
+            best["digitization_data"] = dd
 
         tmpl_path = os.path.join(SCRIPT_DIR, "kmds_paper_viewer_claude.html")
         with open(tmpl_path, "r", encoding="utf-8") as f:
@@ -2646,7 +2750,7 @@ def main(page: ft.Page):
                         app.load_lineformer_model(model_key)
                         app.raw_lines = None
                         status_text.value = "Line model loaded."
-                        status_text.color = ft.colors.GREEN_700
+                        status_text.color = OK
                         progress_ring.visible = False
                         page.update()
                         if app.current_image is not None:
@@ -2691,7 +2795,7 @@ def main(page: ft.Page):
                     app.load_lineformer_model(key)
                 app.raw_lines = None
                 status_text.value = "Line model loaded."
-                status_text.color = ft.colors.GREEN_700
+                status_text.color = OK
                 progress_ring.visible = False
                 page.update()
                 if app.current_image is not None:
@@ -2712,10 +2816,10 @@ def main(page: ft.Page):
                         )
 
                     download_help = ft.Column([
-                        ft.Text("Download failed.", color=ft.colors.RED),
+                        ft.Text("Download failed.", color=ERR),
                         ft.Text(f"Download '{hf_filename}' from:", no_wrap=False),
                         ft.TextButton("HuggingFace", url=HUGGINGFACE_MODELS_URL),
-                        ft.ElevatedButton("Import Model", icon=ft.icons.FILE_UPLOAD,
+                        ft.FilledTonalButton("Import Model", icon=ft.icons.FILE_UPLOAD,
                                           on_click=on_import_finetune),
                     ], spacing=5)
                     clear_download_help()
@@ -2730,12 +2834,12 @@ def main(page: ft.Page):
 
     model_dropdown.on_change = on_model_change
 
-    upload_btn = ft.ElevatedButton(
+    upload_btn = ft.FilledButton(
         "Open Image (or Cmd+V)", icon=ft.icons.FOLDER_OPEN,
         on_click=lambda _: file_picker.pick_files(allowed_extensions=["png", "jpg", "jpeg", "bmp", "tiff"]),
     )
 
-    open_pdf_btn = ft.ElevatedButton(
+    open_pdf_btn = ft.FilledButton(
         "Open PDF", icon=ft.icons.PICTURE_AS_PDF, disabled=not PDF_SUPPORT,
         tooltip="Extract all chart figures from a PDF and edit each one."
                 if PDF_SUPPORT else "PDF support requires PyMuPDF (pip install pymupdf).",
@@ -2997,10 +3101,19 @@ def main(page: ft.Page):
     api_key_status = ft.Text(
         "Key active" if os.environ.get("ANTHROPIC_API_KEY") else "No key set",
         size=11,
-        color=ft.colors.GREEN_700 if os.environ.get("ANTHROPIC_API_KEY")
-        else ft.colors.GREY_600,
+        color=OK if os.environ.get("ANTHROPIC_API_KEY")
+        else INK_3,
     )
     api_key_save_btn = ft.OutlinedButton("Save key")
+
+    # One consistent pill silhouette across every action button; per-button
+    # colors (e.g. the destructive Delete Line) are set at the constructor.
+    for _b in (upload_btn, open_pdf_btn, recrop_btn, review_figures_btn, kmds_btn,
+               save_fig_btn, open_record_btn, export_sd_btn, export_wpd_btn,
+               verify_btn, detect_markers_btn, axis_fix_btn, label_lines_btn,
+               erase_btn, add_btn, apply_btn, done_btn, export_csv_btn,
+               api_key_save_btn, kmds_save_btn, kmds_download_btn):
+        _b.style = ft.ButtonStyle(shape=_btn_shape)
 
     def on_save_api_key(_):
         key = (api_key_field.value or "").strip()
@@ -3013,31 +3126,31 @@ def main(page: ft.Page):
         api_key_field.value = ""      # never echo the key back
         if key:
             api_key_status.value = "Key active"
-            api_key_status.color = ft.colors.GREEN_700
+            api_key_status.color = OK
         else:
             active = bool(os.environ.get("ANTHROPIC_API_KEY"))
             api_key_status.value = ("Saved key cleared (env key still active)"
                                     if active else "No key set")
-            api_key_status.color = (ft.colors.GREEN_700 if active
-                                    else ft.colors.GREY_600)
+            api_key_status.color = (OK if active
+                                    else INK_3)
         page.update()
 
     api_key_save_btn.on_click = on_save_api_key
 
     settings_panel = ft.Container(
         content=ft.Column([
-            _section_label("Models"),
+            _section_header(ft.icons.MEMORY, "Models"),
             model_dropdown,
-            ft.Row([progress_ring, status_text], spacing=5),
+            _status_pill(progress_ring, status_text),
             axis_model_dropdown,
-            axis_status_text,
+            _status_pill(axis_status_text),
             sort_dropdown,
             _soft_divider(),
-            _section_label("Claude API"),
+            _section_header(ft.icons.KEY, "Claude API"),
             api_key_field,
             ft.Row([api_key_save_btn, api_key_status], spacing=8),
             _soft_divider(),
-            _section_label("Sampling"),
+            _section_header(ft.icons.TUNE, "Sampling"),
             downsample_dropdown,
             max_points_label, max_points_slider,
             fixed_step_label, fixed_step_slider,
@@ -3046,26 +3159,29 @@ def main(page: ft.Page):
             detected_lines_hint,
             detected_lines_column,
             edit_panel,
+            _section_header(ft.icons.AUTO_AWESOME, "AI tools"),
             verify_btn,
             detect_markers_btn,
             axis_fix_btn,
             label_lines_btn,
             _soft_divider(),
-            _section_label("Adjust in digitizer"),
+            _section_header(ft.icons.LAUNCH, "Adjust in digitizer"),
             ft.Text("StarryDigitizer", size=13, weight=ft.FontWeight.W_500, color=INK),
             ft.Row([export_sd_btn,
-                    ft.IconButton(icon=ft.icons.OPEN_IN_NEW, tooltip="Open StarryDigitizer",
+                    ft.IconButton(icon=ft.icons.OPEN_IN_NEW, icon_size=18,
+                                  icon_color=ACCENT, tooltip="Open StarryDigitizer",
                                   url="https://starrydigitizer.vercel.app/")], spacing=0),
             ft.Text("WebPlotDigitizer", size=13, weight=ft.FontWeight.W_500, color=INK),
             ft.Row([export_wpd_btn,
-                    ft.IconButton(icon=ft.icons.OPEN_IN_NEW, tooltip="Open WebPlotDigitizer",
+                    ft.IconButton(icon=ft.icons.OPEN_IN_NEW, icon_size=18,
+                                  icon_color=ACCENT, tooltip="Open WebPlotDigitizer",
                                   url="https://apps.automeris.io/wpd/")], spacing=0),
             ft.Container(expand=True),
             ft.Text(f"v{APP_VERSION}", size=11, color=INK_3),
         ], spacing=9, expand=True, scroll=ft.ScrollMode.AUTO),
-        width=280, padding=16,
+        width=290, padding=16,
         bgcolor=SURFACE, border_radius=14,
-        border=ft.border.all(1, RULE),
+        border=ft.border.all(1, RULE), shadow=_card_shadow(),
         margin=ft.margin.only(right=4),
     )
 
@@ -3085,32 +3201,55 @@ def main(page: ft.Page):
 
     def _card(content, pad=14):
         return ft.Container(content=content, padding=pad, bgcolor=SURFACE,
-                            border_radius=14, border=ft.border.all(1, RULE))
+                            border_radius=14, border=ft.border.all(1, RULE),
+                            shadow=_card_shadow())
 
     data_table_section = _card(ft.Column([
-        ft.Row([data_table_title, ft.Container(expand=True), export_csv_btn]),
+        ft.Row([ft.Icon(ft.icons.TABLE_CHART_OUTLINED, size=18, color=ACCENT),
+                data_table_title, ft.Container(expand=True), export_csv_btn]),
         ft.Row([x_axis_name_field, y_axis_name_field, table_line_picker], spacing=10),
         table_row_count_text,
         data_table_scroll,
     ], spacing=8))
 
     toolbar_card = _card(
-        ft.Row([upload_btn, open_pdf_btn, pdf_detector_dropdown, review_figures_btn,
-                recrop_btn, kmds_btn, save_fig_btn, open_record_btn,
-                process_progress_ring, process_status_text],
-               alignment=ft.MainAxisAlignment.START,
-               vertical_alignment=ft.CrossAxisAlignment.CENTER,
-               wrap=True, run_spacing=8, spacing=8),
+        ft.Column([
+            ft.Row([upload_btn, open_pdf_btn,
+                    _vsep(),
+                    pdf_detector_dropdown, review_figures_btn, recrop_btn,
+                    _vsep(),
+                    kmds_btn, save_fig_btn, open_record_btn],
+                   alignment=ft.MainAxisAlignment.START,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                   wrap=True, run_spacing=8, spacing=8),
+            ft.Row([process_progress_ring, process_status_text],
+                   spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ], spacing=8),
         pad=12)
 
-    def _img_card(title, body):
+    def _img_placeholder(icon, hint):
+        # Ghost state shown through the well until an (opaque) image covers it.
         return ft.Container(
             content=ft.Column([
-                ft.Text(title, size=13, weight=ft.FontWeight.W_600, color=INK_3),
-                ft.Container(content=body, bgcolor="#FFFFFF", border_radius=10,
+                ft.Icon(icon, size=32, color="#B7C6E6"),
+                ft.Text(hint, size=11, color=INK_3),
+            ], spacing=6, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+               tight=True),
+            width=CANVAS_W, height=150, alignment=ft.alignment.center,
+        )
+
+    def _img_card(title, icon, body, ph_icon, ph_hint):
+        return ft.Container(
+            content=ft.Column([
+                ft.Row([ft.Icon(icon, size=15, color=ACCENT),
+                        ft.Text(title, size=13, weight=ft.FontWeight.W_600, color=INK_3)],
+                       spacing=6),
+                ft.Container(content=ft.Stack([_img_placeholder(ph_icon, ph_hint), body]),
+                             bgcolor=SURFACE_2, border_radius=10,
                              border=ft.border.all(1, RULE), padding=4),
             ], spacing=8, width=CANVAS_W + 8),
-            padding=10, bgcolor=SURFACE, border_radius=14, border=ft.border.all(1, RULE))
+            padding=10, bgcolor=SURFACE, border_radius=14, border=ft.border.all(1, RULE),
+            shadow=_card_shadow())
 
     main_content = ft.Column([
         toolbar_card,
@@ -3118,8 +3257,12 @@ def main(page: ft.Page):
         # Fixed-width image columns: the click-to-pixel math assumes the canvas
         # renders at exactly CANVAS_W, so the columns must NOT be squeezed.
         ft.Row([
-            _img_card("Input image", input_image),
-            _img_card("Extracted points", result_stack),
+            _img_card("Input image", ft.icons.IMAGE_OUTLINED, input_image,
+                      ft.icons.ADD_PHOTO_ALTERNATE_OUTLINED,
+                      "Open an image or PDF to begin"),
+            _img_card("Extracted points", ft.icons.SHOW_CHART, result_stack,
+                      ft.icons.AUTO_GRAPH,
+                      "Detected lines will appear here"),
         ], vertical_alignment=ft.CrossAxisAlignment.START,
            scroll=ft.ScrollMode.AUTO, spacing=12),
         info_text,
@@ -3128,24 +3271,81 @@ def main(page: ft.Page):
         kmds_panel,
     ], expand=True, scroll=ft.ScrollMode.AUTO, spacing=12)
 
+    def _star(left, top, size, color, opacity):
+        # Decorative header star; sits behind the title row.
+        return ft.Container(content=ft.Text("✦", size=size, color=color),
+                            left=left, top=top, opacity=opacity)
+
+    # Starrydata emblem as the brand mark (white chip so the black-on-white
+    # logo sits cleanly on the navy band); falls back to a ✦ chip if the
+    # asset is missing (e.g. unbundled PyInstaller build).
+    _logo_b64 = None
+    try:
+        with open(os.path.join(SCRIPT_DIR, "assets", "starrydata_emblem.png"),
+                  "rb") as _lf:
+            _logo_b64 = base64.b64encode(_lf.read()).decode("ascii")
+    except Exception:
+        _logo_b64 = None
+
+    if _logo_b64:
+        brand_mark = ft.Container(
+            content=ft.Image(src_base64=_logo_b64, width=38, height=38,
+                             fit=ft.ImageFit.COVER),
+            width=38, height=38, border_radius=999, bgcolor="#FFFFFF",
+            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            border=ft.border.all(2, "#3A4C8F"),
+            shadow=ft.BoxShadow(blur_radius=12, color="#66060B22"),
+        )
+    else:
+        brand_mark = ft.Container(
+            content=ft.Text("✦", size=17, color="#FFFFFF", weight=ft.FontWeight.BOLD),
+            width=38, height=38, alignment=ft.alignment.center, border_radius=10,
+            gradient=ft.LinearGradient(begin=ft.alignment.top_left,
+                                       end=ft.alignment.bottom_right,
+                                       colors=["#7CA1FF", "#3B6FE0"]),
+            shadow=ft.BoxShadow(blur_radius=14, color="#553B6FE0"),
+        )
+
+    version_pill = ft.Container(
+        content=ft.Text(f"v{APP_VERSION}", size=11, color="#AAB8E2"),
+        padding=ft.padding.symmetric(horizontal=10, vertical=4),
+        border_radius=999, bgcolor="#1D2A5C", border=ft.border.all(1, "#39498D"),
+    )
+
+    # Navy "night sky" band over the light workspace.
     header = ft.Container(
-        content=ft.Row([
-            ft.Text("●", color=ACCENT, size=15),
-            ft.Column([
-                ft.Text("AutoLineDigitizer", size=19, weight=ft.FontWeight.BOLD, color=INK),
-                ft.Text("chart figures → calibrated data → paper record",
-                        size=11, color=INK_3),
-            ], spacing=0, tight=True),
-            ft.Container(expand=True),
-            ft.Text(f"v{APP_VERSION}", size=11, color=INK_3),
-        ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
-        padding=ft.padding.symmetric(horizontal=22, vertical=12),
-        bgcolor=SURFACE, border=ft.border.only(bottom=ft.BorderSide(1, RULE)),
+        content=ft.Stack([
+            _star(340, 4, 8, GOLD, 0.70),
+            _star(430, 24, 5, "#FFFFFF", 0.35),
+            _star(540, 10, 7, "#8FB0FF", 0.60),
+            _star(660, 26, 5, GOLD, 0.45),
+            _star(780, 6, 7, "#FFFFFF", 0.30),
+            _star(890, 20, 5, "#8FB0FF", 0.50),
+            ft.Row([
+                brand_mark,
+                ft.Column([
+                    ft.Text("AutoLineDigitizer", size=19, weight=ft.FontWeight.BOLD,
+                            color="#F2F5FF"),
+                    ft.Text("chart figures → calibrated data → paper record",
+                            size=11, color="#A9B7E0"),
+                ], spacing=1, tight=True),
+                ft.Container(expand=True),
+                version_pill,
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=14),
+        ]),
+        padding=ft.padding.symmetric(horizontal=22, vertical=14),
+        gradient=ft.LinearGradient(begin=ft.alignment.center_left,
+                                   end=ft.alignment.center_right,
+                                   colors=["#111C46", "#2E4489"]),
+        border=ft.border.only(bottom=ft.BorderSide(1, "#0D1534")),
     )
 
     body = ft.Container(
         content=ft.Row([settings_panel, main_content], expand=True, spacing=16),
         expand=True, padding=18,
+        gradient=ft.LinearGradient(begin=ft.alignment.top_center,
+                                   end=ft.alignment.bottom_center,
+                                   colors=["#E7EEFC", PAPER]),
     )
 
     page.add(ft.Column([header, body], expand=True, spacing=0))
@@ -3186,14 +3386,14 @@ def main(page: ft.Page):
                             )
 
                         download_help = ft.Column([
-                            ft.Text("Auto-download failed.", color=ft.colors.RED),
+                            ft.Text("Auto-download failed.", color=ERR),
                             ft.Text("1. Download from:", no_wrap=False),
                             ft.TextButton("GitHub Releases", url=GITHUB_MODELS_URL),
                             ft.Text("2. Import models:", no_wrap=False),
-                            ft.ElevatedButton("Import Models", icon=ft.icons.FILE_UPLOAD,
-                                              on_click=on_import_startup),
+                            ft.FilledTonalButton("Import Models", icon=ft.icons.FILE_UPLOAD,
+                                                 on_click=on_import_startup),
                             ft.Text("(select iter_3000.pth and checkpoint.pth)",
-                                    size=11, no_wrap=False, color=ft.colors.GREY_600),
+                                    size=11, no_wrap=False, color=INK_3),
                         ], spacing=5)
                         _download_help_controls.append(download_help)
                         sidebar_controls = settings_panel.content.controls
@@ -3211,12 +3411,12 @@ def main(page: ft.Page):
             try:
                 app.load_lineformer_model()
                 status_text.value = "Line model loaded."
-                status_text.color = ft.colors.GREEN_700
+                status_text.color = OK
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 status_text.value = f"Failed: {e}"
-                status_text.color = ft.colors.RED_700
+                status_text.color = ERR
             progress_ring.visible = False
             page.update()
 
@@ -3226,21 +3426,21 @@ def main(page: ft.Page):
             if not CHARTDETE_AVAILABLE:
                 app.auto_axis = False
                 axis_status_text.value = "Not available"
-                axis_status_text.color = ft.colors.ORANGE_700
+                axis_status_text.color = WARN
             else:
                 try:
                     app.load_chartdete_model()
                     axis_status_text.value = "Axis model loaded."
-                    axis_status_text.color = ft.colors.GREEN_700
+                    axis_status_text.color = OK
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
                     app.auto_axis = False
                     axis_status_text.value = f"Failed: {e}"
-                    axis_status_text.color = ft.colors.RED_700
+                    axis_status_text.color = ERR
         except Exception as e:
             status_text.value = f"Failed: {e}"
-            status_text.color = ft.colors.RED_700
+            status_text.color = ERR
             progress_ring.visible = False
         page.update()
 
