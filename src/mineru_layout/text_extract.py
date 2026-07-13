@@ -103,11 +103,16 @@ def _crop_png(img: "np.ndarray", bbox, max_dim: int = 1000,
 # ---------------------------------------------------------------------------
 
 def find_mineru_cli() -> Optional[str]:
-    """Locate a full-MinerU CLI: $ALD_MINERU_CLI, the repo's
-    external/mineru-venv, or PATH. None -> use the lightweight path."""
+    """Locate a full-MinerU CLI — OPT-IN, because the full pipeline adds
+    ~2 min/paper (five neural models per page) and interactive use favors the
+    lightweight path. Set $ALD_MINERU_CLI to a mineru binary, or
+    $ALD_MINERU_FULL=1 to search the repo's external/mineru-venv and PATH.
+    Returns None otherwise -> lightweight path."""
     cand = os.environ.get("ALD_MINERU_CLI")
     if cand:
         return cand if os.path.exists(cand) else None
+    if os.environ.get("ALD_MINERU_FULL") != "1":
+        return None
     src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     repo = os.path.dirname(src_dir)
     local = os.path.join(repo, "external", "mineru-venv", "bin", "mineru")
