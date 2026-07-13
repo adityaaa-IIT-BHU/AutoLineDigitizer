@@ -29,6 +29,7 @@ import json
 import time
 import base64
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -516,6 +517,68 @@ def _usage(resp) -> Dict[str, int]:
 # One focused section call
 # ===================================================================
 
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+
+async def _gemini_generate(content: List[Dict[str, Any]], model: str,
+                           max_tokens: int) -> Dict[str, Any]:
+    """Send the (Anthropic-block-shaped) content to Gemini's REST API.
+
+    Lets any `model` starting with "gemini" run through the same pipeline —
+    e.g. the free-tier gemini-3.5-flash for zero-cost extraction. Uses raw
+    httpx (already a dependency of the anthropic SDK), converts text /
+    image / PDF blocks to Gemini parts, drops cache_control (Gemini caches
+    implicitly, and free-tier tokens cost nothing), and honors the server's
+    retryDelay on 429 — free-tier TPM limits make that routine, not an error.
+    Gemini 3.x spends "thinking" tokens from the same output budget, so the
+    cap gets generous headroom. Returns {"text", <usage fields>}.
+    """
+    import httpx
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        raise RuntimeError("GEMINI_API_KEY / GOOGLE_API_KEY not set")
+    parts: List[Dict[str, Any]] = []
+    for b in content:
+        if b["type"] == "text":
+            parts.append({"text": b["text"]})
+        elif b["type"] == "image":
+            parts.append({"inline_data": {"mime_type": b["source"]["media_type"],
+                                          "data": b["source"]["data"]}})
+        elif b["type"] == "document":
+            parts.append({"inline_data": {"mime_type": "application/pdf",
+                                          "data": b["source"]["data"]}})
+    body = {"contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"maxOutputTokens": min(65536, max_tokens + 24000)}}
+    async with httpx.AsyncClient(timeout=600) as hc:
+        for _ in range(5):
+            r = await hc.post(GEMINI_URL.format(model=model), params={"key": key}, json=body)
+            if r.status_code == 429:
+                delay = 30.0
+                try:
+                    for det in r.json()["error"].get("details", []):
+                        if "RetryInfo" in det.get("@type", ""):
+                            delay = float(det["retryDelay"].rstrip("s")) + 1
+                except Exception:  # noqa: BLE001 — malformed error body
+                    pass
+                print(f"   ⏳ Gemini rate limit — retrying in {min(delay, 90):.0f}s")
+                await asyncio.sleep(min(delay, 90))
+                continue
+            r.raise_for_status()
+            d = r.json()
+            cand = (d.get("candidates") or [{}])[0]
+            text = "".join(p.get("text", "")
+                           for p in (cand.get("content") or {}).get("parts", []))
+            um = d.get("usageMetadata", {})
+            return {"text": text,
+                    "stop_reason": cand.get("finishReason"),
+                    "input_tokens": um.get("promptTokenCount", 0),
+                    "output_tokens": (um.get("candidatesTokenCount", 0)
+                                      + um.get("thoughtsTokenCount", 0)),
+                    "cache_read_tokens": um.get("cachedContentTokenCount", 0),
+                    "cache_creation_tokens": 0}
+        raise RuntimeError("Gemini: still rate-limited after 5 retries")
+
+
 async def extract_one_section(pdf_b64: str, section_key: str, client,
                               blocks: Dict[str, str],
                               section_schema: Optional[Dict[str, Any]] = None,
@@ -619,19 +682,26 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
             "input_tokens": 0, "output_tokens": 0,
             "cache_read_tokens": 0, "cache_creation_tokens": 0}
     try:
-        resp = await client.messages.create(
-            model=model,
-            max_tokens=_SECTION_MAX.get(section_key, SECTION_MAX_TOKENS),
-            messages=[{"role": "user", "content": content}],
-        )
+        if model.startswith("gemini"):
+            g = await _gemini_generate(content, model,
+                                       _SECTION_MAX.get(section_key, SECTION_MAX_TOKENS))
+            raw = g.pop("text")
+            g.pop("stop_reason", None)
+            base.update(g)
+        else:
+            resp = await client.messages.create(
+                model=model,
+                max_tokens=_SECTION_MAX.get(section_key, SECTION_MAX_TOKENS),
+                messages=[{"role": "user", "content": content}],
+            )
+            raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+            base.update(_usage(resp))
     except Exception as e:  # noqa: BLE001 — never crash the whole run
         base.update({"ok": False, "error": f"{type(e).__name__}: {e}",
                      "elapsed_sec": time.time() - t0})
         return base
 
-    raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
     frag = _parse_json_block(raw)
-    base.update(_usage(resp))
     base.update({
         "ok": frag is not None,
         "fragment": frag,
@@ -744,8 +814,12 @@ def _namespace_digest(core_fragment: Optional[Dict[str, Any]]) -> Optional[str]:
 # ===================================================================
 
 async def translate_kmds(en_dict: Dict[str, Any], client,
-                         translation_rules: str) -> Dict[str, Any]:
-    """One Claude call: translate natural-language values to Japanese. Never raises."""
+                         translation_rules: str,
+                         model: str = TRANSLATION_MODEL) -> Dict[str, Any]:
+    """One LLM call: translate natural-language values to Japanese. Never raises.
+
+    model may be an Anthropic id (streamed, with a Sonnet fallback) or a
+    gemini one (free tier, client unused — pass None)."""
     t0 = time.time()
     en_json = json.dumps(en_dict, ensure_ascii=False, indent=2)
     instruction = (
@@ -774,24 +848,32 @@ async def translate_kmds(en_dict: Dict[str, Any], client,
             return await s.get_final_message()
 
     try:
-        resp = await _stream(TRANSLATION_MODEL)
+        if model.startswith("gemini"):
+            g = await _gemini_generate([{"type": "text", "text": instruction}],
+                                       model, TRANSLATION_MAX_TOKENS)
+            raw = g.pop("text")
+            stop_reason = g.pop("stop_reason", None)
+            out.update(g)
+        else:
+            try:
+                resp = await _stream(model)
+            except Exception:  # noqa: BLE001
+                # Fall back to the extraction model (e.g. no Haiku access).
+                resp = await _stream(MODEL)
+            raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+            stop_reason = getattr(resp, "stop_reason", None)
+            out.update(_usage(resp))
     except Exception as e:  # noqa: BLE001
-        # Fall back to the extraction model (e.g. no Haiku access).
-        try:
-            resp = await _stream(MODEL)
-        except Exception:
-            out.update({"ok": False, "error": f"{type(e).__name__}: {e}",
-                        "elapsed_sec": time.time() - t0})
-            return out
+        out.update({"ok": False, "error": f"{type(e).__name__}: {e}",
+                    "elapsed_sec": time.time() - t0})
+        return out
 
-    raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
     ja = _parse_json_block(raw)
     err = None
     if ja is None:
         err = ("translation truncated at max_tokens — record too large"
-               if getattr(resp, "stop_reason", None) == "max_tokens"
+               if stop_reason in ("max_tokens", "MAX_TOKENS")
                else "no JSON block parsed from translation")
-    out.update(_usage(resp))
     out.update({
         "ok": ja is not None,
         "ja": ja,
@@ -803,7 +885,8 @@ async def translate_kmds(en_dict: Dict[str, Any], client,
 
 
 async def translate_record_file(en_path: str, ja_path: str,
-                                prompt_path: str = "extraction_prompt.md") -> Dict[str, Any]:
+                                prompt_path: str = "extraction_prompt.md",
+                                model: str = TRANSLATION_MODEL) -> Dict[str, Any]:
     """Standalone EN→JA translation of a saved KMDS record (for running in the
     background after the English record is already shown). Never raises."""
     try:
@@ -812,8 +895,10 @@ async def translate_record_file(en_path: str, ja_path: str,
             en_dict = json.load(f)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "ja_path": None}
-    async with AsyncAnthropic() as client:
-        tr = await translate_kmds(en_dict, client, blocks["translation"])
+    client_cm = (contextlib.nullcontext() if model.startswith("gemini")
+                 else AsyncAnthropic())
+    async with client_cm as client:
+        tr = await translate_kmds(en_dict, client, blocks["translation"], model=model)
     if tr.get("ok"):
         with open(ja_path, "w", encoding="utf-8") as f:
             json.dump(tr["ja"], f, indent=2, ensure_ascii=False)
@@ -857,10 +942,15 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
 
     translate=False skips the JA pass so callers can show the English record
     immediately and run translate_record_file() in the background."""
-    if not ANTHROPIC_AVAILABLE:
-        return {"_error": "anthropic SDK not installed. pip install anthropic"}
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return {"_error": "ANTHROPIC_API_KEY not set"}
+    is_gemini = model.startswith("gemini")
+    if is_gemini:
+        if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+            return {"_error": "GEMINI_API_KEY / GOOGLE_API_KEY not set"}
+    else:
+        if not ANTHROPIC_AVAILABLE:
+            return {"_error": "anthropic SDK not installed. pip install anthropic"}
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            return {"_error": "ANTHROPIC_API_KEY not set"}
     if not os.path.exists(prompt_path):
         return {"_error": f"Prompt file not found: {prompt_path}"}
     if base_name is None:
@@ -912,7 +1002,10 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
     elif use_mineru_text:
         print("⤷ MinerU text unavailable (weights missing or scanned PDF) — raw PDF for all calls")
 
-    async with AsyncAnthropic() as client:
+    # Gemini runs need no Anthropic client (and must not require its API key).
+    client_cm = (AsyncAnthropic() if not is_gemini
+                 else contextlib.nullcontext())
+    async with client_cm as client:
         # PHASE 1 — one call establishes the record core + id namespaces (samples,
         # materials). The paper block is cached (1h TTL) so phase 2 rides the cache.
         print(f"⤷ KMDS phase 1: core record + id namespaces ({model})...")
@@ -937,16 +1030,22 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         sec_model = {k: (SECTION_MODELS.get(k, model) if model == MODEL else model)
                      for k in phase2_keys}
         n_light = sum(1 for m in sec_model.values() if m != model)
+        mode_note = ("sequential — free-tier TPM" if is_gemini
+                     else f"concurrent{f'; {n_light} on Haiku' if n_light else ''}")
         print(f"⤷ KMDS phase 2: firing {len(phase2_keys)} focused section calls "
-              f"(concurrent{f'; {n_light} on Haiku' if n_light else ''})...")
-        p2 = list(await asyncio.gather(
-            *(extract_one_section(pdf_b64, key, client, blocks,
-                                  section_schema=section_schemas.get(key),
-                                  model=sec_model[key],
-                                  context_digest=digest, paper_text=paper_text,
-                                  paper_figures=paper_figures)
-              for key in phase2_keys)
-        ))
+              f"({mode_note})...")
+        p2_coros = (extract_one_section(pdf_b64, key, client, blocks,
+                                        section_schema=section_schemas.get(key),
+                                        model=sec_model[key],
+                                        context_digest=digest, paper_text=paper_text,
+                                        paper_figures=paper_figures)
+                    for key in phase2_keys)
+        if is_gemini:
+            # 4-wide bursts of ~100k-token requests blow the free-tier
+            # tokens/minute cap immediately — one at a time paces itself.
+            p2 = [await c for c in p2_coros]
+        else:
+            p2 = list(await asyncio.gather(*p2_coros))
         # Light-model safety net: retry a failed Haiku section once on Sonnet.
         for i, r in enumerate(p2):
             if not r["ok"] and sec_model.get(r["key"], model) != model:
@@ -1011,8 +1110,10 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
 
         # translation pass (sequential, after gather; skippable for fast UI)
         if translate:
-            print("⤷ Translating EN → JA (1 call)...")
-            tr = await translate_kmds(merged, client, blocks["translation"])
+            tr_model = model if is_gemini else TRANSLATION_MODEL
+            print(f"⤷ Translating EN → JA (1 call, {tr_model})...")
+            tr = await translate_kmds(merged, client, blocks["translation"],
+                                      model=tr_model)
         else:
             tr = {"ok": None, "skipped": True, "error": None, "ja": None,
                   "input_tokens": 0, "output_tokens": 0,

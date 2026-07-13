@@ -2297,8 +2297,12 @@ def main(page: ft.Page):
                 try:
                     # translate=False: show the English record as soon as it is
                     # ready; the JA translation runs afterwards in the background.
+                    # KMDS_MODEL=gemini-3.5-flash switches extraction (and the
+                    # background JA pass) to Gemini's free tier — needs
+                    # GEMINI_API_KEY or GOOGLE_API_KEY instead of the Anthropic key.
                     summary = asyncio.run(kmds_parallel.extract_kmds_parallel(
                         app.pdf_path, out_dir, base_name=base, prompt_path=prompt_path,
+                        model=os.environ.get("KMDS_MODEL") or kmds_parallel.MODEL,
                         translate=False,
                     ))
                 except Exception as ex:
@@ -2372,9 +2376,13 @@ def main(page: ft.Page):
                 # so this no longer blocks the user (it used to add 3+ minutes).
                 if n_ok and kmds_paths["en"]:
                     ja_target = os.path.join(out_dir, f"{base}_ja.json")
+                    _kmds_model = os.environ.get("KMDS_MODEL", "")
+                    _tr_model = (_kmds_model if _kmds_model.startswith("gemini")
+                                 else kmds_parallel.TRANSLATION_MODEL)
                     try:
                         tr = asyncio.run(kmds_parallel.translate_record_file(
-                            kmds_paths["en"], ja_target, prompt_path=prompt_path))
+                            kmds_paths["en"], ja_target, prompt_path=prompt_path,
+                            model=_tr_model))
                     except Exception as ex:
                         tr = {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
                     if tr.get("ok"):
