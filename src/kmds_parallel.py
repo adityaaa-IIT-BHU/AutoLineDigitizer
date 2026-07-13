@@ -521,25 +521,24 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
     """
     t0 = time.time()
 
+    # ---- Cost-aware content layout ----------------------------------------
+    # The paper-independent instruction (ground rules + schema fragment, the
+    # BULK of the input at ~15-80k tokens/section) goes FIRST with a 1h cache:
+    # its prefix is byte-identical across papers, so extraction N+1 within the
+    # hour READS it (~0.1x) instead of re-WRITING it (~2x). The paper goes
+    # after it with the default 5-minute cache (phase 2 fires seconds after
+    # phase 1). Per-paper text (namespace digest, crop notes) stays uncached
+    # at the very end so it can never invalidate the stable prefix.
     extras = "\n\n".join(blocks[name] for name in _SECTION_EXTRA[section_key] if blocks.get(name))
-    instruction = (
+    static_instruction = (
         blocks["ground_rules"]                       # verbatim universal rules, at the top
         + "\n\n" + blocks["overview"]                 # verbatim schema overview
         + (("\n\n" + extras) if extras else "")       # section-relevant rule blocks
         + "\n\n" + SUB_PROMPTS[section_key]           # section-specific instruction
     )
-
-    if context_digest:
-        instruction += (
-            "\n\n## Namespace from Phase 1 (authoritative)\n"
-            "These ids were assigned by the phase-1 extraction of THIS paper. Use them "
-            "EXACTLY when cross-referencing — do not invent, rename, drop, or re-order "
-            "ids:\n```json\n" + context_digest + "\n```"
-        )
-
     if section_schema is not None:
         schema_json = json.dumps(section_schema, ensure_ascii=False)
-        instruction += (
+        static_instruction += (
             "\n\n## OUTPUT SCHEMA — authoritative\n"
             "Your JSON for THIS section MUST conform EXACTLY to the JSON Schema below.\n"
             "- Use its EXACT field names, value TYPES, and enum/pattern values. A field "
@@ -550,11 +549,17 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
             "nearest `notes`/`comments` (if the schema has one) — never invent a new key.\n"
             "- Fill what the paper states; use null (or omit optional keys) when it is "
             "silent. Output ONLY the keys this section is responsible for.\n"
-            "```json\n" + schema_json + "\n```\n"
-            "Output the JSON in a single ```json code block and nothing else."
+            "```json\n" + schema_json + "\n```"
         )
-    else:
-        instruction += "\nOutput the JSON in a single ```json code block and nothing else."
+
+    tail = ""
+    if context_digest:
+        tail += (
+            "## Namespace from Phase 1 (authoritative)\n"
+            "These ids were assigned by the phase-1 extraction of THIS paper. Use them "
+            "EXACTLY when cross-referencing — do not invent, rename, drop, or re-order "
+            "ids:\n```json\n" + context_digest + "\n```\n\n"
+        )
 
     crops = paper_figures if (section_key == "data_sources" and paper_figures
                               and 0 < len(paper_figures) <= MAX_FIGURE_CROPS) else None
@@ -565,15 +570,15 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
         paper_block = {
             "type": "text",
             "text": ("## PAPER (MinerU-extracted markdown, reading order)\n\n" + paper_text),
-            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            "cache_control": {"type": "ephemeral"},   # 5m — reused within this run only
         }
         if crops:
-            instruction = (
+            tail += (
                 "## Attached figure/table crops\n"
-                "After the paper markdown, every figure/chart/table is attached as a "
-                "cropped image, in order. Each crop k corresponds to the `*[FIGURE k …]*` "
-                "or `*[TABLE crop k …]*` marker at its position in the markdown — use the "
-                "markers to match each image to its caption and page.\n\n" + instruction
+                "The images above are crops of every figure/chart/table in the paper, in "
+                "order. Each crop k corresponds to the `*[FIGURE k …]*` or `*[TABLE crop "
+                "k …]*` marker at its position in the markdown — use the markers to match "
+                "each image to its caption and page.\n\n"
             )
             for fig in crops:
                 figure_blocks.append({"type": "text",
@@ -586,13 +591,16 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
         paper_block = {
             "type": "document",
             "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64},
-            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            "cache_control": {"type": "ephemeral"},   # 5m — reused within this run only
         }
+
+    tail += "Output the JSON in a single ```json code block and nothing else."
     content = [
+        {"type": "text", "text": static_instruction,
+         "cache_control": {"type": "ephemeral", "ttl": "1h"}},  # stable across papers
         paper_block,
         *figure_blocks,
-        {"type": "text", "text": instruction,
-         "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+        {"type": "text", "text": tail},
     ]
 
     base = {"key": section_key, "fragment": None, "raw": None,
