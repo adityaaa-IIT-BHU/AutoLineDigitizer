@@ -43,7 +43,19 @@ except ImportError:
 
 
 MODEL = "claude-sonnet-4-6"          # extraction calls: Sonnet 4.6
+LIGHT_MODEL = "claude-haiku-4-5-20251001"  # 3x cheaper input+output than Sonnet
 TRANSLATION_MODEL = "claude-haiku-4-5-20251001"  # JA translation is mechanical — Haiku is ~3x faster
+
+# Per-section model. core (the id namespaces gate every cross-reference) and
+# data_sources (vision + the densest relational linking) stay on Sonnet; the
+# three materials detail sections are focused read-and-fill jobs where Haiku
+# holds up — any that fails (API error / unparseable JSON) is retried once on
+# the full model before the run gives up on it.
+SECTION_MODELS = {
+    "materials_chem": LIGHT_MODEL,
+    "materials_process": LIGHT_MODEL,
+    "materials_property": LIGHT_MODEL,
+}
 SECTION_MAX_TOKENS = 12000           # headroom for publication + many-figure papers
 TRANSLATION_MAX_TOKENS = 32000       # JA output ≈ EN size (records with passages run large)
 
@@ -919,15 +931,32 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
             print("   ⚠ no phase-1 namespace — phase 2 runs without cross-reference context")
 
         # PHASE 2 — 4 concurrent detail calls, each carrying the phase-1 namespace.
+        # materials_* run on the light model (see SECTION_MODELS); a caller-chosen
+        # non-default model overrides the map for every section.
         phase2_keys = [k for k in SUB_PROMPTS if k != PHASE1_KEY]
-        print(f"⤷ KMDS phase 2: firing {len(phase2_keys)} focused section calls (concurrent)...")
-        p2 = await asyncio.gather(
+        sec_model = {k: (SECTION_MODELS.get(k, model) if model == MODEL else model)
+                     for k in phase2_keys}
+        n_light = sum(1 for m in sec_model.values() if m != model)
+        print(f"⤷ KMDS phase 2: firing {len(phase2_keys)} focused section calls "
+              f"(concurrent{f'; {n_light} on Haiku' if n_light else ''})...")
+        p2 = list(await asyncio.gather(
             *(extract_one_section(pdf_b64, key, client, blocks,
-                                  section_schema=section_schemas.get(key), model=model,
+                                  section_schema=section_schemas.get(key),
+                                  model=sec_model[key],
                                   context_digest=digest, paper_text=paper_text,
                                   paper_figures=paper_figures)
               for key in phase2_keys)
-        )
+        ))
+        # Light-model safety net: retry a failed Haiku section once on Sonnet.
+        for i, r in enumerate(p2):
+            if not r["ok"] and sec_model.get(r["key"], model) != model:
+                print(f"   ↻ {r['key']}: failed on light model ({r['error']}) — "
+                      f"retrying on {model}")
+                p2[i] = await extract_one_section(
+                    pdf_b64, r["key"], client, blocks,
+                    section_schema=section_schemas.get(r["key"]), model=model,
+                    context_digest=digest, paper_text=paper_text,
+                    paper_figures=paper_figures)
         results.extend(p2)
         sec_wall = time.time() - t0
         for r in p2:
