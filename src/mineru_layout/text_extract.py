@@ -17,7 +17,13 @@ Scanned PDFs (no text layer) return None — callers fall back to sending the
 raw PDF to the model (vision path).
 """
 
+import glob
+import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 from typing import Dict, List, Optional
 
 try:
@@ -85,6 +91,163 @@ def _crop_png(img: "np.ndarray", bbox, max_dim: int = 1000,
         return buf.getvalue()
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Full-MinerU backend (optional). The real MinerU pipeline adds what the
+# lightweight path above cannot do: formulas as LaTeX (dedicated recognition
+# model — the PDF text layer garbles math-font glyphs), tables as HTML, and
+# OCR for scanned PDFs. It is a ~2GB install, so it lives in its OWN venv and
+# is used via its CLI whenever one is found; everything falls back to the
+# lightweight bundled path otherwise.
+# ---------------------------------------------------------------------------
+
+def find_mineru_cli() -> Optional[str]:
+    """Locate a full-MinerU CLI: $ALD_MINERU_CLI, the repo's
+    external/mineru-venv, or PATH. None -> use the lightweight path."""
+    cand = os.environ.get("ALD_MINERU_CLI")
+    if cand:
+        return cand if os.path.exists(cand) else None
+    src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    repo = os.path.dirname(src_dir)
+    local = os.path.join(repo, "external", "mineru-venv", "bin", "mineru")
+    if os.path.exists(local):
+        return local
+    return shutil.which("mineru")
+
+
+def _file_png(path: str, max_dim: int = 1000) -> Optional[bytes]:
+    """PNG bytes of a saved crop image, downscaled to cap vision tokens."""
+    try:
+        from PIL import Image
+        import io
+        pil = Image.open(path).convert("RGB")
+        if max(pil.size) > max_dim:
+            s = max_dim / max(pil.size)
+            pil = pil.resize((int(pil.width * s), int(pil.height * s)))
+        buf = io.BytesIO()
+        pil.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def _content_list_markdown(cl: List[Dict], images_dir: str,
+                           include_references: bool = True,
+                           return_figures: bool = False) -> Dict:
+    """Rebuild our marker-annotated markdown from MinerU's content_list.json
+    (reading-ordered items with page_idx/type/text/img_path)."""
+    out: List[str] = []
+    figures: List[Dict] = []
+    n_blocks = n_figs = n_tabs = 0
+    cur_page = None
+
+    for item in cl:
+        t = item.get("type")
+        if t in ("header", "footer", "page_number", "aside_text"):
+            continue
+        pg = int(item.get("page_idx", 0)) + 1
+        if pg != cur_page:
+            out.append(f"*[page {pg}]*")
+            cur_page = pg
+
+        if t in ("image", "chart", "table"):
+            label = "table" if t == "table" else ("chart" if t == "chart" else "image")
+            cap = " ".join(item.get(f"{t}_caption") or [])
+            foot = " ".join(item.get(f"{t}_footnote") or [])
+            png = None
+            if return_figures and item.get("img_path"):
+                png = _file_png(os.path.join(images_dir, item["img_path"]))
+            if png is not None:
+                figures.append({"index": len(figures) + 1, "page": pg,
+                                "label": label, "png": png})
+                out.append(f"*[TABLE crop {len(figures)} — page {pg}; crop attached]*"
+                           if t == "table" else
+                           f"*[FIGURE {len(figures)} ({label}) — page {pg}; "
+                           f"crop attached — see caption below/above]*")
+            else:
+                out.append(f"*[{label.upper()} on page {pg} — see caption below/above]*")
+            if cap:
+                out.append(f"> **{cap}**")
+            if foot:
+                out.append(f"> {foot}")
+            if t == "table":
+                n_tabs += 1
+                body = (item.get("table_body") or "").strip()
+                if body:
+                    out.append(body)   # HTML table — models read it natively
+                n_blocks += 1
+            else:
+                n_figs += 1
+            continue
+
+        if t == "equation":
+            txt = (item.get("text") or "").strip()
+            if txt:
+                out.append(txt if txt.startswith("$$") else f"$$ {txt} $$")
+                n_blocks += 1
+            continue
+
+        if t == "list":
+            if item.get("sub_type") == "ref_text" and not include_references:
+                continue
+            items = [str(x).strip() for x in (item.get("list_items") or []) if str(x).strip()]
+            out.extend(items)
+            n_blocks += len(items)
+            continue
+
+        txt = (item.get("text") or "").strip()
+        if not txt:
+            continue
+        lvl = item.get("text_level")
+        if lvl:
+            out.append("#" * min(int(lvl), 4) + " " + txt)
+        elif t == "page_footnote":
+            out.append(f"> {txt}")
+        else:
+            out.append(txt)
+        n_blocks += 1
+
+    return {
+        "markdown": "\n\n".join(out),
+        "n_pages": (max((int(i.get("page_idx", 0)) for i in cl), default=-1) + 1),
+        "n_blocks": n_blocks,
+        "n_figures": n_figs,
+        "n_tables": n_tabs,
+        "figures": figures,
+    }
+
+
+def pdf_to_markdown_full(pdf_path: str, cli_path: str,
+                         include_references: bool = True,
+                         return_figures: bool = False,
+                         timeout_sec: int = 1800) -> Optional[Dict]:
+    """Parse with the full MinerU CLI (formulas->LaTeX, tables->HTML, OCR for
+    scans). Same return shape as pdf_to_markdown; None on any failure so the
+    caller can fall back to the lightweight path. First run per machine
+    downloads ~2GB of models."""
+    tmp = tempfile.mkdtemp(prefix="mineru_full_")
+    try:
+        env = {**os.environ, "HF_HUB_DISABLE_XET": "1"}  # xet stalls on weak Wi-Fi
+        proc = subprocess.run([cli_path, "-p", pdf_path, "-o", tmp, "-b", "pipeline"],
+                              capture_output=True, text=True, timeout=timeout_sec,
+                              env=env)
+        if proc.returncode != 0:
+            return None
+        # MinerU sanitizes the output dir name — glob instead of guessing it.
+        hits = glob.glob(os.path.join(tmp, "*", "*", "*_content_list.json"))
+        if not hits:
+            return None
+        with open(hits[0], "r", encoding="utf-8") as f:
+            cl = json.load(f)
+        res = _content_list_markdown(cl, os.path.dirname(hits[0]),
+                                     include_references=include_references,
+                                     return_figures=return_figures)
+        return res if res["markdown"].strip() else None
+    except Exception:  # noqa: BLE001 — optional backend, never break the caller
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def pdf_to_markdown(pdf_path: str, detector, dpi: int = 200,

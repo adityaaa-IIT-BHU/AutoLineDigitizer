@@ -916,16 +916,29 @@ MAX_FIGURE_CROPS = 40  # above this, data_sources falls back to the raw PDF
 
 
 def _mineru_paper_markdown(pdf_path: str) -> Optional[Dict[str, Any]]:
-    """MinerU full extraction (layout + reading order + text layer + figure/table
-    crops). Returns the pdf_to_markdown result dict, or None on any
-    unavailability — never raises."""
+    """Paper -> LLM-ready markdown + figure crops. Prefers the full MinerU
+    CLI when installed (LaTeX formulas, HTML tables, OCR for scans — see
+    text_extract.find_mineru_cli); falls back to the bundled lightweight
+    layout+text-layer path. Returns None on total unavailability — never raises."""
     try:
-        from mineru_layout.text_extract import pdf_to_markdown
+        from mineru_layout.text_extract import (pdf_to_markdown, pdf_to_markdown_full,
+                                                find_mineru_cli)
+        cli = find_mineru_cli()
+        if cli:
+            res = pdf_to_markdown_full(pdf_path, cli, include_references=True,
+                                       return_figures=True)
+            if res:
+                res["engine"] = "mineru-full"
+                return res
+            print("   ⚠ full-MinerU CLI failed — trying lightweight extraction")
         from pdf_figures import mineru_available, _load_mineru
         if not mineru_available():
             return None
-        return pdf_to_markdown(pdf_path, detector=_load_mineru(),
-                               include_references=True, return_figures=True)
+        res = pdf_to_markdown(pdf_path, detector=_load_mineru(),
+                              include_references=True, return_figures=True)
+        if res:
+            res["engine"] = "lightweight"
+        return res
     except Exception as e:  # noqa: BLE001 — markdown is an optimization, not a requirement
         print(f"   ⚠ MinerU text extraction failed ({type(e).__name__}: {e}) — raw-PDF fallback")
         return None
@@ -993,7 +1006,8 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
                 f.write(paper_text)
         except OSError:
             md_path = None
-        print(f"⤷ MinerU: {md_info['n_pages']} pages → {len(paper_text)//1000}k chars markdown "
+        print(f"⤷ MinerU [{md_info.get('engine', '?')}]: {md_info['n_pages']} pages → "
+              f"{len(paper_text)//1000}k chars markdown "
               f"+ {len(paper_figures or [])} figure/table crops "
               f"({md_info['n_blocks']} text blocks){' -> ' + md_path if md_path else ''}")
         if paper_figures and len(paper_figures) > MAX_FIGURE_CROPS:
