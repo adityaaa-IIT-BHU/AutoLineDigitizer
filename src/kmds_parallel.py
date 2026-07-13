@@ -922,7 +922,15 @@ def _mineru_paper_markdown(pdf_path: str) -> Optional[Dict[str, Any]]:
     layout+text-layer path. Returns None on total unavailability — never raises."""
     try:
         from mineru_layout.text_extract import (pdf_to_markdown, pdf_to_markdown_full,
-                                                find_mineru_cli)
+                                                pdf_to_markdown_remote, find_mineru_cli)
+        url = os.environ.get("ALD_MINERU_URL")
+        if url:
+            res = pdf_to_markdown_remote(pdf_path, url, include_references=True,
+                                         return_figures=True)
+            if res:
+                res["engine"] = "mineru-remote"
+                return res
+            print("   ⚠ remote MinerU server failed — trying local paths")
         cli = find_mineru_cli()
         if cli:
             res = pdf_to_markdown_full(pdf_path, cli, include_references=True,

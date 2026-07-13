@@ -223,6 +223,60 @@ def _content_list_markdown(cl: List[Dict], images_dir: str,
     }
 
 
+def pdf_to_markdown_remote(pdf_path: str, server_url: str,
+                           include_references: bool = True,
+                           return_figures: bool = False,
+                           timeout_sec: int = 1800) -> Optional[Dict]:
+    """Parse via a `mineru-api` server (e.g. the lab's GPU box) — set
+    $ALD_MINERU_URL, e.g. http://144.213.x.x:8000. Same return shape as
+    pdf_to_markdown; None on any failure so callers fall back to local paths.
+    The server does the heavy inference; only the PDF goes up and
+    content_list + crop images come back."""
+    try:
+        import httpx
+        with open(pdf_path, "rb") as f:
+            r = httpx.post(
+                server_url.rstrip("/") + "/file_parse",
+                files={"files": (os.path.basename(pdf_path), f, "application/pdf")},
+                data={"backend": "pipeline", "return_md": "false",
+                      "return_content_list": "true", "return_images": "true",
+                      "formula_enable": "true", "table_enable": "true"},
+                timeout=timeout_sec)
+        r.raise_for_status()
+        payload = r.json()
+        results = payload.get("results") or {}
+        doc = next(iter(results.values()), None) if isinstance(results, dict) else None
+        if not doc or not doc.get("content_list"):
+            return None
+        cl = doc["content_list"]
+        if isinstance(cl, str):
+            cl = json.loads(cl)
+        # images arrive as base64 keyed by their content_list img_path — stage
+        # them in a temp dir so _content_list_markdown works unchanged.
+        tmp = tempfile.mkdtemp(prefix="mineru_remote_")
+        try:
+            import base64 as _b64
+            os.makedirs(os.path.join(tmp, "images"), exist_ok=True)
+            for name, b64 in (doc.get("images") or {}).items():
+                if "," in b64:  # data-URI form
+                    b64 = b64.split(",", 1)[1]
+                # server keys by bare filename; content_list refs "images/<name>"
+                # — stage under both so either convention resolves.
+                blob = _b64.b64decode(b64)
+                base = os.path.basename(name)
+                for dest in (os.path.join(tmp, "images", base), os.path.join(tmp, base)):
+                    with open(dest, "wb") as imf:
+                        imf.write(blob)
+            res = _content_list_markdown(cl, tmp,
+                                         include_references=include_references,
+                                         return_figures=return_figures)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return res if res["markdown"].strip() else None
+    except Exception:  # noqa: BLE001 — optional backend, never break the caller
+        return None
+
+
 def pdf_to_markdown_full(pdf_path: str, cli_path: str,
                          include_references: bool = True,
                          return_figures: bool = False,
