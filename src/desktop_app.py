@@ -279,7 +279,6 @@ class LineFormerApp:
         # staged for "Open Paper Record" (the KMDS viewer).
         self.kmds_record = None
         self.fig_digitizations = {}
-        self._auto_digitizing = False   # background whole-gallery digitization
 
     def _vlm_screener_available(self):
         return VLM_SCREENER_AVAILABLE and VLM_SCREENER_SDK_AVAILABLE
@@ -686,11 +685,7 @@ class LineFormerApp:
     # --- Axis calibration + CSV (NEW) ---
     def pixel_to_data(self, px, py):
         """Convert pixel (px, py) to axis-calibrated (x, y). Raw pixels if no axis."""
-        return self.pixel_to_data_cfg(self.axis_config, px, py)
-
-    @staticmethod
-    def pixel_to_data_cfg(cfg, px, py):
-        """pixel -> data for an EXPLICIT axis_config (thread-safe: no app state)."""
+        cfg = self.axis_config
         if cfg is None:
             return float(px), float(py)
         x1_px = float(cfg.get('x1_px', 0.0))
@@ -721,13 +716,10 @@ class LineFormerApp:
                 y_val = y1_val + t * (y2_val - y1_val)
         return float(x_val), float(y_val)
 
-    def get_axis_titles(self, ocr_results=None):
-        """Try to pull X/Y axis titles from ocr_results (default: the cached
-        ones for the current figure). Returns (x, y)."""
-        if ocr_results is None:
-            ocr_results = self.ocr_results
+    def get_axis_titles(self):
+        """Try to pull X/Y axis titles from cached ocr_results. Returns (x, y)."""
         x_name, y_name = "", ""
-        if not isinstance(ocr_results, dict):
+        if not isinstance(self.ocr_results, dict):
             return x_name, y_name
         x_keys = ('x_axis_title', 'xaxis_title', 'x_title', 'x-axis-title')
         y_keys = ('y_axis_title', 'yaxis_title', 'y_title', 'y-axis-title')
@@ -743,13 +735,13 @@ class LineFormerApp:
             return ""
 
         for k in x_keys:
-            if k in ocr_results:
-                x_name = _first_text(ocr_results[k])
+            if k in self.ocr_results:
+                x_name = _first_text(self.ocr_results[k])
                 if x_name:
                     break
         for k in y_keys:
-            if k in ocr_results:
-                y_name = _first_text(ocr_results[k])
+            if k in self.ocr_results:
+                y_name = _first_text(self.ocr_results[k])
                 if y_name:
                     break
         return x_name, y_name
@@ -1929,81 +1921,6 @@ def main(page: ft.Page):
         pdf_gallery.visible = True
         page.update()
 
-    def _auto_digitize_all_figures():
-        """Hands-free digitization of the whole gallery: for every figure,
-        detect + calibrate the axes (ChartDete + OCR) and extract the curves
-        (LineFormer), then stage the result straight into the paper record.
-        Figures without a calibratable axis (photos, schematics, tables) are
-        skipped. Never touches the interactive editor's state, and never
-        overwrites a figure the user digitized themselves — a manual
-        re-digitization always replaces the auto version, not vice versa."""
-        if app._auto_digitizing or not app.pdf_figures:
-            return
-        app._auto_digitizing = True
-        try:
-            n = len(app.pdf_figures)
-            if app.infer_module is None:
-                process_status_text.value = "Auto-digitize: loading LineFormer model…"
-                page.update()
-                app.load_lineformer_model()
-            if app.chartdete_module is None:
-                process_status_text.value = "Auto-digitize: loading axis-detection model…"
-                page.update()
-                app.load_chartdete_model()
-            done = 0
-            for idx, (img_bgr, meta) in enumerate(list(app.pdf_figures)):
-                if idx in app.fig_digitizations:
-                    continue   # user (or a previous pass) already covered it
-                process_status_text.value = (
-                    f"Auto-digitizing figure {idx + 1}/{n} "
-                    f"(axes + curves → paper record)…")
-                page.update()
-                try:
-                    saved_pa = app.cached_plot_area
-                    try:
-                        cfg, ocr = app.detect_axis_calibration(img_bgr)
-                    finally:
-                        app.cached_plot_area = saved_pa
-                    if not cfg:
-                        continue   # nothing to calibrate — not a data chart
-                    # LineFormer, without touching the editor's raw_lines state
-                    line_ds = app.infer_module.get_dataseries(img_bgr, to_clean=False)
-                    series_px = [[[int(p["x"]), int(p["y"])] for p in line]
-                                 for line in line_ds if len(line)]
-                    series = [[list(app.pixel_to_data_cfg(cfg, p[0], p[1]))
-                               for p in app.downsample_points(pts)]
-                              for pts in series_px]
-                    series = [s for s in series if len(s) >= 3]
-                    total = sum(len(s) for s in series)
-                    if not series:
-                        continue
-                    x_name, y_name = app.get_axis_titles(ocr)
-                    label = (meta.get("caption") or "").strip() or f"Figure {idx + 1}"
-                    app.fig_digitizations[idx] = {
-                        "label": label, "page": meta.get("page"),
-                        "x_name": x_name or "X", "y_name": y_name or "Y",
-                        "is_log_x": bool(cfg.get("xIsLogScale")),
-                        "is_log_y": bool(cfg.get("yIsLogScale")),
-                        "n_lines": len(series), "n_points": total,
-                        "series": series,
-                        "series_names": [f"Line {i + 1}" for i in range(len(series))],
-                        "auto": True,
-                    }
-                    done += 1
-                except Exception as ex:  # noqa: BLE001 — one bad figure never stops the rest
-                    print(f"[auto-digitize] figure {idx + 1} failed: {ex}")
-            if done and not kmds_clock.get("running"):
-                open_record_btn.disabled = False
-            process_status_text.value = (
-                f"✓ Auto-digitized {done}/{n} figure(s) → paper record. "
-                "Open any figure to refine it — your edits replace the auto version."
-                if done else
-                f"{n} figure(s) found. None auto-digitized (no calibratable axes) — "
-                "click a figure to digitize manually.")
-            page.update()
-        finally:
-            app._auto_digitizing = False
-
     def run_pdf_extraction(pdf_path):
         process_progress_ring.visible = True
         process_status_text.value = "Scanning PDF for figures..."
@@ -2062,10 +1979,6 @@ def main(page: ft.Page):
         build_gallery()
         # Auto-load the first figure so the user sees results immediately.
         on_thumbnail_click(0)
-        # Then digitize the entire gallery hands-free (this thread is already
-        # a background worker): axes + curves of every chart go straight into
-        # the paper record; the user only refines what needs refining.
-        _auto_digitize_all_figures()
 
     def pick_pdf_result(e: ft.FilePickerResultEvent):
         if e.files and len(e.files) > 0:
