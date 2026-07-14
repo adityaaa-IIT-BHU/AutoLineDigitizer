@@ -2517,6 +2517,49 @@ def main(page: ft.Page):
         def _words(s):
             return set(re.findall(r"[a-zA-Zα-ωΑ-Ω]+", str(s or "").lower())) - {"the", "of", "a"}
 
+        def _tick_range(ax):
+            t = [v for v in ((ax or {}).get("reference ticks") or [])
+                 if isinstance(v, (int, float))]
+            return (min(t), max(t)) if len(t) >= 2 else None
+
+        def _contain(dig_rng, donor_rng):
+            """Fraction of the digitized range that sits inside the donor axis
+            range (10% padding). ~1 = the points live on that axis."""
+            if not dig_rng or not donor_rng:
+                return 0.0
+            (a, b), (c, d) = dig_rng, donor_rng
+            if b <= a:
+                return 1.0 if c <= a <= d else 0.0
+            span = (d - c) or 1.0
+            c, d = c - 0.1 * span, d + 0.1 * span
+            return max(0.0, min(b, d) - max(a, c)) / (b - a)
+
+        def _range_match_kmds_graph(xr, yr, n_series):
+            """Best KMDS graph anywhere in the record whose real axes' tick
+            ranges contain the digitized data on BOTH axes — so a calibrated
+            curve attaches to its true graph (inheriting axes + samples)
+            instead of a bare X/Y stub. Returns (graph, figure) or (None, None).
+            Uncalibrated (pixel-space) digitizations match nothing."""
+            best, best_fig, best_score = None, None, 0.0
+            for f in figs:
+                for g in f.get("graphs") or []:
+                    if not isinstance(g, dict) or g.get("digitization_data"):
+                        continue
+                    axes = {str(a.get("axis") or "").lower(): a
+                            for a in (g.get("axes") or [])}
+                    xa, ya = axes.get("x"), axes.get("y")
+                    xt = (xa or {}).get("quantity", {}).get("term") if xa else None
+                    yt = (ya or {}).get("quantity", {}).get("term") if ya else None
+                    if (xt or "").upper() in ("", "X", "Y") or (yt or "").upper() in ("", "X", "Y"):
+                        continue
+                    cx, cy = _contain(xr, _tick_range(xa)), _contain(yr, _tick_range(ya))
+                    if cx < 0.6 or cy < 0.6:
+                        continue
+                    score = cx + cy + (0.5 if n_series == len(g.get("samples") or []) else 0.0)
+                    if score > best_score:
+                        best, best_fig, best_score = g, f, score
+            return best, best_fig
+
         def _graph_score(dig, g, xs, ys):
             """How well a digitization fits one KMDS graph: axis-name word
             overlap + digitized-range vs reference-tick overlap. Distinguishes
@@ -2550,6 +2593,34 @@ def main(page: ft.Page):
                     + 0.5 * range_score(xs, axes.get("x")))
 
         for _key, dig in app.fig_digitizations.items():
+            summary = (f"Digitized: {dig['n_lines']} lines, {dig['n_points']} pts — "
+                       f"X:{dig['x_name']}{' log' if dig['is_log_x'] else ''}, "
+                       f"Y:{dig['y_name']}{' log' if dig['is_log_y'] else ''}")
+            dd = {
+                "x_axis": {"name": dig["x_name"], "is_log": dig["is_log_x"]},
+                "y_axis": {"name": dig["y_name"], "is_log": dig["is_log_y"]},
+                "series": [{"label": (dig.get("series_names") or [])[i] if i < len(dig.get("series_names") or []) else f"Line {i + 1}",
+                            "points_data": s} for i, s in enumerate(dig["series"])],
+                "provenance": {"page": dig["page"], "n_lines": dig["n_lines"], "n_points": dig["n_points"]},
+            }
+            xs = [p[0] for s in dig["series"] for p in s if len(p) == 2]
+            ys = [p[1] for s in dig["series"] for p in s if len(p) == 2]
+            xr = (min(xs), max(xs)) if xs else None
+            yr = (min(ys), max(ys)) if ys else None
+
+            # PASS 1 — attach to the true KMDS graph anywhere in the record by
+            # value-range containment, so a calibrated curve inherits that
+            # graph's real axes + linked samples instead of a bare X/Y stub.
+            best, best_fig = _range_match_kmds_graph(xr, yr, len(dig["series"]))
+            if best is not None:
+                best_fig["digitization"] = (best_fig.get("digitization") + " · " + summary) \
+                    if best_fig.get("digitization") else summary
+                best["digitization"] = summary
+                best["digitization_data"] = dd
+                continue
+
+            # PASS 2 — no calibrated match: fall back to figure-number lookup +
+            # in-figure axis-name/range scoring, else a new stub graph.
             n = _first_int(dig["label"])
             target = None
             if n is not None:
@@ -2564,24 +2635,9 @@ def main(page: ft.Page):
                           "structure": "", "description": "(digitized in AutoLineDigitizer)",
                           "graphs": [], "comments": []}
                 figs.append(target)
-            summary = (f"Digitized: {dig['n_lines']} lines, {dig['n_points']} pts — "
-                       f"X:{dig['x_name']}{' log' if dig['is_log_x'] else ''}, "
-                       f"Y:{dig['y_name']}{' log' if dig['is_log_y'] else ''}")
             target["digitization"] = (target.get("digitization") + " · " + summary) if target.get("digitization") else summary
-            dd = {
-                "x_axis": {"name": dig["x_name"], "is_log": dig["is_log_x"]},
-                "y_axis": {"name": dig["y_name"], "is_log": dig["is_log_y"]},
-                "series": [{"label": (dig.get("series_names") or [])[i] if i < len(dig.get("series_names") or []) else f"Line {i + 1}",
-                            "points_data": s} for i, s in enumerate(dig["series"])],
-                "provenance": {"page": dig["page"], "n_lines": dig["n_lines"], "n_points": dig["n_points"]},
-            }
-            # Attach the digitization to the RIGHT graph of the figure — score
-            # every free panel by axis-name + value-range fit instead of
-            # clobbering graphs[0]; unmatched digitizations get their own graph.
             if not isinstance(target.get("graphs"), list):
                 target["graphs"] = []
-            xs = [p[0] for s in dig["series"] for p in s if len(p) == 2]
-            ys = [p[1] for s in dig["series"] for p in s if len(p) == 2]
             best, best_score = None, 0.0
             for g in target["graphs"]:
                 if not isinstance(g, dict) or g.get("digitization_data"):
