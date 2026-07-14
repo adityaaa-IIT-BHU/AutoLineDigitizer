@@ -57,6 +57,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from smart_axis_extractor import SmartAxisExtractor
+import app_settings
 from app_settings import load_saved_api_key, save_api_key
 
 # Activate a previously-saved Anthropic key (env var wins) before any of the
