@@ -49,6 +49,28 @@ def _xydata(points: List[List[float]]) -> str:
     return "\n".join(f"{p[0]}, {p[1]}" for p in points if len(p) >= 2)
 
 
+_UNIT_TEX = [
+    (r"\^\{\\circ\}\s*C", "°C"), (r"\\circ", "°"),
+    (r"\\Omega", "Ω"), (r"\\cdot", "·"), (r"\\times", "×"),
+    (r"\\mu", "µ"), (r"\\Delta", "Δ"), (r"\\degree", "°"),
+]
+
+
+def sanitize_unit(unit: Optional[str]) -> str:
+    """KMDS units carry LaTeX (e.g. '^{\\circ}C', 'W (m K)^{-1}') that
+    Starrydata rejects. Convert to plain-text units: degree/Greek symbols,
+    '^{-1}' -> '^-1', drop braces and stray backslashes."""
+    import re
+    u = unit or "-"
+    for pat, rep in _UNIT_TEX:
+        u = re.sub(pat, rep, u)
+    u = re.sub(r"\^\{([^}]*)\}", r"^\1", u)   # ^{-1} -> ^-1
+    u = re.sub(r"_\{([^}]*)\}", r"_\1", u)     # _{...} -> _...
+    u = u.replace("{", "").replace("}", "").replace("\\", "")
+    u = re.sub(r"\s+", " ", u).strip()
+    return u or "-"
+
+
 def build_postdata_form(fig: Dict[str, Any], curve: Dict[str, Any]) -> Dict[str, str]:
     """One (figure, curve) -> the postdata form dict."""
     x, y = fig.get("x", {}), fig.get("y", {})
@@ -57,7 +79,7 @@ def build_postdata_form(fig: Dict[str, Any], curve: Dict[str, Any]) -> Dict[str,
                 ("Temperature", "Magnetic Field", "Orientation", "Pressure", "Other", "comments")}
     return {
         "property_x": x.get("property", ""), "property_y": y.get("property", ""),
-        "unit_x": x.get("unit", "-") or "-", "unit_y": y.get("unit", "-") or "-",
+        "unit_x": sanitize_unit(x.get("unit")), "unit_y": sanitize_unit(y.get("unit")),
         "xmulti": str(x.get("multi", 0)), "ymulti": str(y.get("multi", 0)),
         "caption": fig.get("caption", ""), "fignum": fig.get("fignum", ""),
         "samplename": curve.get("samplename", ""),
@@ -143,6 +165,9 @@ class StarrydataClient:
             data = {"status": resp.status, "text": resp.text()[:300]}
         self.sent.append({"url": url, "status": resp.status, "response": data})
         print(f"  {'✓' if ok else '✗'} POST {path} -> {resp.status}")
+        if not ok:
+            msg = data.get("error") or data.get("text") or data if isinstance(data, dict) else data
+            print(f"      ↳ {str(msg)[:200]}")
         return data
 
     # -- operations ----------------------------------------------------------
@@ -172,11 +197,16 @@ class StarrydataClient:
             out.append(self._post(f"/starrydata2/paperlist/postdata/{pk}/{self.project}", form))
         return out
 
-    def upload_export(self, export: Dict[str, Any]) -> Dict[str, Any]:
+    def upload_export(self, export: Dict[str, Any],
+                      pk_override: Optional[str] = None) -> Dict[str, Any]:
         doi = export["doi"]
         self.project = export.get("project", self.project)
-        print(f"\n▶ Resolving paper for DOI {doi} …")
-        pk = self.resolve_doi(doi)
+        if pk_override:
+            pk = pk_override
+            print(f"\n▶ Using explicit paper pk {pk} (skipping DOI resolve)")
+        else:
+            print(f"\n▶ Resolving paper for DOI {doi} …")
+            pk = self.resolve_doi(doi)
         if not pk:
             print(f"  ✗ paper not found for DOI {doi}. Add it to Starrydata first.")
             return {"ok": False, "error": "paper not found"}
@@ -377,6 +407,7 @@ def main():
     base = DEFAULT_BASE
     if "--base" in args:
         base = args[args.index("--base") + 1]
+    pk_override = args[args.index("--pk") + 1] if "--pk" in args else None
     export = json.load(open(export_path, encoding="utf-8"))
 
     client = StarrydataClient(base=base, dry_run=not commit)
@@ -386,7 +417,7 @@ def main():
             client.close()
             return
     try:
-        result = client.upload_export(export)
+        result = client.upload_export(export, pk_override=pk_override)
         print(f"\n{'=' * 50}\nResult: {json.dumps(result, ensure_ascii=False)}")
         if not commit:
             print("Dry-run only — nothing was written. Re-run with --commit to upload.")
