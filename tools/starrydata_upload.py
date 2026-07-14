@@ -81,7 +81,12 @@ class StarrydataClient:
         self.sent = []   # log of committed requests (or would-be, in dry-run)
 
     # -- session -------------------------------------------------------------
-    def login_interactive(self):
+    def login_interactive(self, timeout_s: int = 420):
+        """Open the browser and WAIT (poll) until the user has logged in —
+        detected by a Django sessionid cookie once we're off the login/MFA
+        pages. No terminal input needed, so this works when launched headless
+        of a TTY."""
+        import time
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(headless=False)
@@ -89,10 +94,27 @@ class StarrydataClient:
         self._page = self._ctx.new_page()
         self._page.goto(self.base + "/starrydata2/", wait_until="domcontentloaded")
         print("\n" + "=" * 60)
-        print("  Log in to Starrydata in the browser window (incl. MFA).")
-        print("  When you SEE the paper list / database, press Enter here.")
-        print("=" * 60)
-        input("  ↵ Enter once logged in… ")
+        print("  Log in to Starrydata in the browser window (incl. MFA),")
+        print("  then open your database / paper list. I'll detect it and")
+        print("  start uploading automatically — no need to touch the terminal.")
+        print("=" * 60, flush=True)
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            names = {c["name"] for c in self._ctx.cookies()}
+            url = ""
+            try:
+                url = self._page.url
+            except Exception:
+                pass
+            logged_in = ("sessionid" in names and "csrftoken" in names
+                         and "/mfa" not in url and "/login" not in url)
+            if logged_in:
+                print("  ✓ login detected — waiting 3s then uploading…", flush=True)
+                time.sleep(3)
+                return True
+            time.sleep(2)
+        print("  ✗ timed out waiting for login.", flush=True)
+        return False
 
     def _csrf(self) -> str:
         for c in self._ctx.cookies():
@@ -125,7 +147,9 @@ class StarrydataClient:
 
     # -- operations ----------------------------------------------------------
     def resolve_doi(self, doi: str) -> Optional[str]:
-        """DOI -> paper pk (via the search endpoint). None if not found."""
+        """DOI -> paper pk via the search endpoint. Returns the pk ONLY on an
+        exact DOI match — never guesses the first row (that mis-targeted an
+        upload during testing). None if the paper isn't in Starrydata yet."""
         form = {"doi": doi + "\n", "pagelimit": "25", "projectname": self.project,
                 "page": "1", "words": "", "searchselect": "DOI",
                 "sort_field": "sid", "sort_order": "asc"}
@@ -134,11 +158,12 @@ class StarrydataClient:
             return "<paper_pk:dry-run>"
         data = self._post("/starrydata2/paperlist/uploadpaper/all", form)
         rows = data if isinstance(data, list) else []
+        want = doi.strip().lower()
         for r in rows:
-            f = r.get("fields", {})
-            if str(f.get("DOI", "")).lower() == doi.lower():
+            if str(r.get("fields", {}).get("DOI", "")).strip().lower() == want:
                 return r.get("pk")
-        return rows[0].get("pk") if rows else None
+        print(f"  ✗ no EXACT DOI match among {len(rows)} search result(s) for {doi}")
+        return None
 
     def upload_figure(self, pk: str, fig: Dict[str, Any]) -> List[Dict[str, Any]]:
         out = []
@@ -196,6 +221,152 @@ def build_export_from_digitizations(doi: str, fig_digitizations: Dict[Any, Dict]
     return {"doi": doi, "project": project, "figures": figures}
 
 
+def _placeholder_axis(term: Optional[str]) -> bool:
+    return (term or "").strip().upper() in ("", "X", "Y")
+
+
+def _axis_range(axis: Dict[str, Any]) -> Optional[tuple]:
+    t = [x for x in (axis.get("reference ticks") or []) if isinstance(x, (int, float))]
+    return (min(t), max(t)) if len(t) >= 2 else None
+
+
+def _containment(dig: tuple, donor: Optional[tuple]) -> float:
+    """Fraction of the digitized data range that falls inside the donor axis
+    range. ~1.0 means the points live within that axis; low means they don't."""
+    if donor is None or dig is None:
+        return 0.0
+    (a, b), (c, d) = dig, donor
+    if b <= a:
+        return 1.0 if c <= a <= d else 0.0
+    # pad the donor range 10% each side (ticks rarely span the exact data)
+    span = d - c
+    c, d = c - 0.1 * span, d + 0.1 * span
+    inter = max(0.0, min(b, d) - max(a, c))
+    return inter / (b - a)
+
+
+def _collect_donors(pub: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """KMDS graphs that carry real axis identity + a value range — the sources
+    a digitized curve can inherit property names, units, and samples from."""
+    donors = []
+    for fg in pub.get("figures") or []:
+        for g in fg.get("graphs") or []:
+            axes = {str(a.get("axis") or "").lower(): a for a in (g.get("axes") or [])}
+            xa, ya = axes.get("x", {}), axes.get("y", {})
+            xt = (xa.get("quantity") or {}).get("term")
+            yt = (ya.get("quantity") or {}).get("term")
+            if _placeholder_axis(xt) or _placeholder_axis(yt):
+                continue
+            donors.append({"gid": g.get("graph local id"), "x": xa, "y": ya,
+                           "xterm": xt, "yterm": yt,
+                           "xr": _axis_range(xa), "yr": _axis_range(ya),
+                           "samples": g.get("samples") or [], "used": False})
+    return donors
+
+
+def _match_donor(xr: tuple, yr: tuple, n_series: int,
+                 donors: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Best donor for a digitized stub, by range containment on BOTH axes.
+    Requires a strong fit so raw-pixel (uncalibrated) stubs match nothing."""
+    best, best_score = None, 0.0
+    for d in donors:
+        if d["used"] or d["xr"] is None or d["yr"] is None:
+            continue
+        cx, cy = _containment(xr, d["xr"]), _containment(yr, d["yr"])
+        if cx < 0.6 or cy < 0.6:          # both axes must genuinely fit
+            continue
+        score = cx + cy + (0.5 if n_series == len(d["samples"]) else 0.0)
+        if score > best_score:
+            best, best_score = d, score
+    return best
+
+
+def build_export_from_kmds(record: Dict[str, Any],
+                           project: str = DEFAULT_PROJECT) -> Dict[str, Any]:
+    """Convert a merged KMDS paper record (window.__STUDIO_RECORD from
+    paper_record_view.html — KMDS metadata + digitization_data) into an upload
+    export. Only graphs with REAL axis property names (not placeholder X/Y) and
+    digitized points are included; each series is mapped to its linked KMDS
+    sample when the counts line up, else to its line label. Returns the export
+    plus a 'skipped' list explaining what was left out and why."""
+    pub = (record.get("metadata") or {}).get("publication") or {}
+    sample_by_id = {}
+    for s in pub.get("samples") or []:
+        comps = [c.get("name") for c in (s.get("components") or []) if c.get("name")]
+        sample_by_id[s.get("sample local id")] = {
+            "name": s.get("name") or (comps[0] if comps else ""),
+            "composition": s.get("name") or "; ".join(comps),
+        }
+    donors = _collect_donors(pub)
+
+    figures, skipped = [], []
+    seen = set()
+    for fg in pub.get("figures") or []:
+        for g in fg.get("graphs") or []:
+            dd = g.get("digitization_data")
+            if not (dd and dd.get("series")):
+                continue
+            gid = g.get("graph local id")
+            axes = {str(a.get("axis") or "").lower(): a for a in (g.get("axes") or [])}
+            xax, yax = axes.get("x", {}), axes.get("y", {})
+            xterm = (xax.get("quantity") or {}).get("term") or (dd.get("x_axis") or {}).get("name")
+            yterm = (yax.get("quantity") or {}).get("term") or (dd.get("y_axis") or {}).get("name")
+
+            series = dd["series"]
+            pts_all = [p for s in series for p in (s.get("points_data") or []) if len(p) >= 2]
+            if not pts_all:
+                continue
+            xr = (min(p[0] for p in pts_all), max(p[0] for p in pts_all))
+            yr = (min(p[1] for p in pts_all), max(p[1] for p in pts_all))
+
+            # The graph's own axes are placeholders -> try to INHERIT identity
+            # from a KMDS donor graph by matching the digitized value ranges.
+            linked = g.get("samples") or []
+            matched = None
+            if _placeholder_axis(xterm) or _placeholder_axis(yterm):
+                matched = _match_donor(xr, yr, len(series), donors)
+                if matched is None:
+                    skipped.append({"graph": gid, "reason":
+                        "axes are X/Y and no KMDS graph matches the data range "
+                        "(likely digitized without axis calibration — points are "
+                        "in pixel space). Recalibrate axes to upload."})
+                    continue
+                matched["used"] = True
+                xax, yax = matched["x"], matched["y"]
+                xterm, yterm = matched["xterm"], matched["yterm"]
+                linked = matched["samples"] or linked
+
+            key = (xterm, yterm, round(xr[0], 3), round(yr[0], 3), len(series))
+            if key in seen:
+                continue          # de-duplicate repeated graphs in the merged record
+            seen.add(key)
+
+            curves = []
+            for i, s in enumerate(series):
+                pts = s.get("points_data") or []
+                if len(pts) < 2:
+                    continue
+                if len(linked) == len(series) and i < len(linked) and linked[i] in sample_by_id:
+                    smp = sample_by_id[linked[i]]
+                    sname, comp = smp["name"], smp["composition"]
+                else:
+                    sname = s.get("label") or f"Line {i + 1}"
+                    comp = sname
+                curves.append({"samplename": sname, "composition": comp, "points": pts})
+            if not curves:
+                continue
+            figures.append({
+                "caption": (g.get("caption summary") or fg.get("figure name") or gid),
+                "fignum": str(matched["gid"] if matched else fg.get("figure local id") or gid),
+                "x": {"property": xterm, "unit": xax.get("unit") or "-", "multi": 0},
+                "y": {"property": yterm, "unit": yax.get("unit") or "-", "multi": 0},
+                "conditions": {}, "curves": curves,
+                "_matched_from": (matched["gid"] if matched else None),
+            })
+    return {"doi": pub.get("DOI"), "project": project,
+            "figures": figures, "skipped": skipped}
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
@@ -209,9 +380,11 @@ def main():
     export = json.load(open(export_path, encoding="utf-8"))
 
     client = StarrydataClient(base=base, dry_run=not commit)
-    print(f"\n{'🚀 COMMIT' if commit else '🧪 DRY-RUN'} mode | base={base}")
+    print(f"\n{'🚀 COMMIT' if commit else '🧪 DRY-RUN'} mode | base={base}", flush=True)
     if commit:
-        client.login_interactive()
+        if not client.login_interactive():
+            client.close()
+            return
     try:
         result = client.upload_export(export)
         print(f"\n{'=' * 50}\nResult: {json.dumps(result, ensure_ascii=False)}")
