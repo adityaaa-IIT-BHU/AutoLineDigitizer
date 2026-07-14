@@ -278,6 +278,7 @@ class LineFormerApp:
         # Paper-record handoff: parsed KMDS record + per-figure digitizations
         # staged for "Open Paper Record" (the KMDS viewer).
         self.kmds_record = None
+        self.merged_record = None    # KMDS + digitizations, for Starrydata3 upload
         self.fig_digitizations = {}
 
     def _vlm_screener_available(self):
@@ -1142,6 +1143,20 @@ def main(page: ft.Page):
                 "and open it in the paper viewer (browser). Enabled once KMDS is "
                 "extracted or a figure is staged.",
     )
+    sd3_upload_btn = ft.OutlinedButton(
+        "Upload to Starrydata3", icon=ft.icons.CLOUD_UPLOAD,
+        tooltip="Push this paper's KMDS record (metadata + digitized curves) to "
+                "your Starrydata3 database over its API. Set the URL + key below.",
+    )
+    sd3_url_field = ft.TextField(
+        label="Starrydata3 URL", dense=True, width=260,
+        value=app_settings.get_setting("sd3_url", os.environ.get("ALD_SD3_URL", "")),
+        hint_text="http://gpu-box:8300")
+    sd3_key_field = ft.TextField(
+        label="Starrydata3 API key", dense=True, width=260, password=True,
+        can_reveal_password=True,
+        value=app_settings.get_setting("sd3_key", os.environ.get("ALD_SD3_KEY", "")),
+        hint_text="sd3_…")
 
     # KMDS results render INLINE (not a dialog) — updating inline controls from
     # a worker thread is the pattern that already works elsewhere in this app.
@@ -2662,6 +2677,7 @@ def main(page: ft.Page):
             best["digitization"] = summary
             best["digitization_data"] = dd
 
+        app.merged_record = record   # stash for Starrydata3 upload (same record)
         tmpl_path = os.path.join(SCRIPT_DIR, "kmds_paper_viewer_claude.html")
         with open(tmpl_path, "r", encoding="utf-8") as f:
             tmpl = f.read()
@@ -2692,8 +2708,47 @@ def main(page: ft.Page):
             process_status_text.value = f"Open record failed: {ex}"
         page.update()
 
+    def on_upload_starrydata3(_):
+        if not app.kmds_record and not app.fig_digitizations:
+            process_status_text.value = "Run KMDS and/or stage a figure first, then upload."
+            page.update()
+            return
+        url = (sd3_url_field.value or "").strip()
+        key = (sd3_key_field.value or "").strip()
+        if not url or not key:
+            process_status_text.value = "Set the Starrydata3 URL and API key first."
+            page.update()
+            return
+        # persist the URL/key (per-user, 0600) so they stick across sessions
+        app_settings.set_setting("sd3_url", url)
+        app_settings.set_setting("sd3_key", key)
+        sd3_upload_btn.disabled = True
+        process_status_text.value = "Uploading to Starrydata3…"
+        page.update()
+
+        def _work():
+            try:
+                _build_paper_record_html()          # refresh app.merged_record
+                import starrydata3_client
+                res = starrydata3_client.push_record(url, key, app.merged_record or {})
+            except Exception as ex:  # noqa: BLE001
+                res = {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
+            sd3_upload_btn.disabled = False
+            if res.get("ok"):
+                base = url.rstrip("/")
+                process_status_text.value = (
+                    f"✓ Uploaded to Starrydata3 as SID-{res.get('sid')} "
+                    f"({res.get('curves_indexed')} curves, "
+                    f"{res.get('n_violations')} schema notes) — {base}/view/{res.get('sid')}")
+            else:
+                process_status_text.value = f"Starrydata3 upload failed: {res.get('error')}"
+            page.update()
+
+        page.run_thread(_work)
+
     save_fig_btn.on_click = on_save_fig_to_record
     open_record_btn.on_click = on_open_paper_record
+    sd3_upload_btn.on_click = on_upload_starrydata3
 
     def save_sd_result(e: ft.FilePickerResultEvent):
         if e.path and app.data_series:
@@ -3165,7 +3220,7 @@ def main(page: ft.Page):
     # One consistent pill silhouette across every action button; per-button
     # colors (e.g. the destructive Delete Line) are set at the constructor.
     for _b in (upload_btn, open_pdf_btn, recrop_btn, review_figures_btn, kmds_btn,
-               save_fig_btn, open_record_btn, export_sd_btn, export_wpd_btn,
+               save_fig_btn, open_record_btn, sd3_upload_btn, export_sd_btn, export_wpd_btn,
                verify_btn, detect_markers_btn, axis_fix_btn, label_lines_btn,
                erase_btn, add_btn, apply_btn, done_btn, export_csv_btn,
                api_key_save_btn, kmds_save_btn, kmds_download_btn):
@@ -3275,6 +3330,10 @@ def main(page: ft.Page):
                     pdf_detector_dropdown, review_figures_btn, recrop_btn,
                     _vsep(),
                     kmds_btn, save_fig_btn, open_record_btn],
+                   alignment=ft.MainAxisAlignment.START,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                   wrap=True, run_spacing=8, spacing=8),
+            ft.Row([sd3_upload_btn, sd3_url_field, sd3_key_field],
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    wrap=True, run_spacing=8, spacing=8),

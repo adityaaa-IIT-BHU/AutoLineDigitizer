@@ -66,3 +66,26 @@ def save_api_key(key, path=None):
         pass
     if key:
         os.environ["ANTHROPIC_API_KEY"] = key
+
+
+def get_setting(name, default="", path=None):
+    """Read an arbitrary saved setting (e.g. Starrydata3 URL / API key)."""
+    v = read_settings(path).get(name)
+    return v if isinstance(v, str) and v else default
+
+
+def set_setting(name, value, path=None):
+    """Persist an arbitrary setting (0600 perms). Empty value clears it."""
+    path = path or get_settings_path()
+    cfg = read_settings(path)
+    value = (value or "").strip()
+    if value:
+        cfg[name] = value
+    else:
+        cfg.pop(name, None)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
