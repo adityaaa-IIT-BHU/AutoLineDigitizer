@@ -219,3 +219,6 @@ test_render.py
 
 # Claude Code local state
 .claude/
+
+# local Starrydata API capture (may contain session/CSRF tokens)
+starrydata_api_capture.json
