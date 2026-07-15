@@ -284,6 +284,7 @@ class LineFormerApp:
         # per-figure review gate: {key: {"axes_ok": bool, "extraction_ok": bool}}
         # a figure uploads only once BOTH are checked by the person.
         self.fig_reviews = {}
+        self._vlm_labeled = set()   # figure idxs already legend-labeled by Claude
         self.fig_digitizations = {}
 
     def _vlm_screener_available(self):
@@ -1835,15 +1836,38 @@ def main(page: ft.Page):
                         y_axis_name_field.value = y_name
                         app.y_axis_name = y_name
 
-                    # Name each curve by its legend entry (deterministic, by
-                    # swatch color) — turns "Line N" into the real sample.
+                    # Name each curve by its legend. Claude reads the legend and
+                    # matches each curve by its real color/style/position (best);
+                    # the deterministic color-matcher is the offline fallback.
                     try:
-                        import legend_mapper
-                        series_px = [s["points"] for s in app.data_series]
-                        names = legend_mapper.map_curves_to_legend(
-                            app.current_image, getattr(app, "_last_detections", {}) or {},
-                            series_px, app.chartdete_module.get_ocr_reader())
-                        if any(names):
+                        names = None
+                        fidx = app.current_figure_idx
+                        can_vlm = (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE
+                                   and bool(os.environ.get("ANTHROPIC_API_KEY")))
+                        if can_vlm and fidx not in app._vlm_labeled:
+                            try:
+                                import line_utils
+                                if app.vlm is None:
+                                    app.vlm = VLMVerifier(verify_ssl=True)
+                                process_status_text.value = "Reading the legend with Claude…"
+                                page.update()
+                                colors = list(line_utils.get_distinct_colors(len(app.data_series)))
+                                names = app.vlm.label_lines_by_legend(
+                                    app.current_image, app.data_series, colors=colors,
+                                    model="claude-sonnet-4-6")
+                                if fidx is not None:
+                                    app._vlm_labeled.add(fidx)
+                            except Exception as ex:  # noqa: BLE001
+                                print(f"[legend-vlm] {ex}")
+                                names = None
+                        if not (names and any(names)):     # fallback: color matcher
+                            import legend_mapper
+                            series_px = [s["points"] for s in app.data_series]
+                            names = legend_mapper.map_curves_to_legend(
+                                app.current_image, getattr(app, "_last_detections", {}) or {},
+                                series_px,
+                                app.chartdete_module.get_ocr_reader() if app.chartdete_module else None)
+                        if names and any(names):
                             for i, nm in enumerate(names):
                                 if nm and i < len(app.data_series):
                                     app.data_series[i]["label"] = nm
