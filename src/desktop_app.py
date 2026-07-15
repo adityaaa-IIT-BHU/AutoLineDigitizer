@@ -280,6 +280,7 @@ class LineFormerApp:
         # staged for "Open Paper Record" (the KMDS viewer).
         self.kmds_record = None
         self.merged_record = None    # KMDS + digitizations, for Starrydata3 upload
+        self._auto_digitizing = False
         self.fig_digitizations = {}
 
     def _vlm_screener_available(self):
@@ -687,7 +688,11 @@ class LineFormerApp:
     # --- Axis calibration + CSV (NEW) ---
     def pixel_to_data(self, px, py):
         """Convert pixel (px, py) to axis-calibrated (x, y). Raw pixels if no axis."""
-        cfg = self.axis_config
+        return self.pixel_to_data_cfg(self.axis_config, px, py)
+
+    @staticmethod
+    def pixel_to_data_cfg(cfg, px, py):
+        """pixel -> data for an EXPLICIT axis_config (thread-safe: no app state)."""
         if cfg is None:
             return float(px), float(py)
         x1_px = float(cfg.get('x1_px', 0.0))
@@ -1148,6 +1153,12 @@ def main(page: ft.Page):
         "Upload to Starrydata3", icon=ft.icons.CLOUD_UPLOAD,
         tooltip="Push this paper's KMDS record (metadata + digitized curves) to "
                 "your Starrydata3 database over its API. Set the URL + key below.",
+    )
+    sd3_auto_btn = ft.FilledTonalButton(
+        "Auto: digitize all + upload", icon=ft.icons.AUTO_AWESOME_MOTION,
+        tooltip="One click: auto-calibrate axes and extract curves for EVERY "
+                "figure in the open PDF, then upload the whole paper to "
+                "Starrydata3. Uses the DOI from the PDF (or KMDS if already run).",
     )
     sd3_url_field = ft.TextField(
         label="Starrydata3 URL", dense=True, width=260,
@@ -2709,6 +2720,143 @@ def main(page: ft.Page):
             process_status_text.value = f"Open record failed: {ex}"
         page.update()
 
+    def _auto_digitize_all_figures():
+        """Hands-free digitization of the whole gallery: for every figure,
+        detect + calibrate the axes (ChartDete + OCR) and extract the curves
+        (LineFormer), then stage the result into the paper record. Figures
+        without a calibratable axis (photos, schematics, tables) are skipped.
+        Never overwrites a figure already digitized. Returns count done."""
+        if app._auto_digitizing or not app.pdf_figures:
+            return 0
+        app._auto_digitizing = True
+        try:
+            n = len(app.pdf_figures)
+            if app.infer_module is None:
+                process_status_text.value = "Auto: loading LineFormer model…"
+                page.update()
+                app.load_lineformer_model()
+            if app.chartdete_module is None:
+                process_status_text.value = "Auto: loading axis-detection model…"
+                page.update()
+                app.load_chartdete_model()
+            done = 0
+            for idx, (img_bgr, meta) in enumerate(list(app.pdf_figures)):
+                if idx in app.fig_digitizations:
+                    continue
+                process_status_text.value = (
+                    f"Auto-digitizing figure {idx + 1}/{n} (axes + curves)…")
+                page.update()
+                try:
+                    saved_pa = app.cached_plot_area
+                    try:
+                        cfg, ocr = app.detect_axis_calibration(img_bgr)
+                    finally:
+                        app.cached_plot_area = saved_pa
+                    if not cfg:
+                        continue
+                    line_ds = app.infer_module.get_dataseries(img_bgr, to_clean=False)
+                    series_px = [[[int(p["x"]), int(p["y"])] for p in line]
+                                 for line in line_ds if len(line)]
+                    series = [[list(app.pixel_to_data_cfg(cfg, p[0], p[1]))
+                               for p in app.downsample_points(pts)]
+                              for pts in series_px]
+                    series = [s for s in series if len(s) >= 3]
+                    if not series:
+                        continue
+                    x_name, y_name = app.get_axis_titles(ocr)
+                    label = (meta.get("caption") or "").strip() or f"Figure {idx + 1}"
+                    app.fig_digitizations[idx] = {
+                        "label": label, "page": meta.get("page"),
+                        "x_name": x_name or "X", "y_name": y_name or "Y",
+                        "is_log_x": bool(cfg.get("xIsLogScale")),
+                        "is_log_y": bool(cfg.get("yIsLogScale")),
+                        "n_lines": len(series),
+                        "n_points": sum(len(s) for s in series),
+                        "series": series,
+                        "series_names": [f"Line {i + 1}" for i in range(len(series))],
+                        "auto": True,
+                    }
+                    done += 1
+                except Exception as ex:  # noqa: BLE001
+                    print(f"[auto-digitize] figure {idx + 1} failed: {ex}")
+            if done and not kmds_clock.get("running"):
+                open_record_btn.disabled = False
+            return done
+        finally:
+            app._auto_digitizing = False
+
+    def _pdf_doi(pdf_path):
+        """Best-effort DOI from the PDF text layer (for auto-upload without KMDS)."""
+        try:
+            import fitz
+            import re as _re
+            doc = fitz.open(pdf_path)
+            text = "".join(doc[i].get_text() for i in range(min(3, len(doc))))
+            doc.close()
+            m = _re.search(r"10\.\d{4,9}/[^\s\"'<>]+", text)
+            return m.group(0).rstrip(".,;)") if m else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def on_auto_pipeline(_):
+        """One click: digitize every figure (axes + curves) and upload the whole
+        paper to Starrydata3. Uses KMDS metadata if already extracted, otherwise
+        a DOI read from the PDF — no paid API needed for the digitize+upload path."""
+        if not (app.pdf_path and str(app.pdf_path).lower().endswith(".pdf")):
+            process_status_text.value = "Open a PDF first."
+            page.update()
+            return
+        url = (sd3_url_field.value or "").strip()
+        key = (sd3_key_field.value or "").strip()
+        if not url or not key:
+            process_status_text.value = "Set the Starrydata3 URL and API key first."
+            page.update()
+            return
+        app_settings.set_setting("sd3_url", url)
+        app_settings.set_setting("sd3_key", key)
+        sd3_auto_btn.disabled = True
+        sd3_upload_btn.disabled = True
+        page.update()
+
+        def _work():
+            try:
+                done = _auto_digitize_all_figures()
+                if not app.fig_digitizations:
+                    process_status_text.value = (
+                        "No figures could be auto-digitized (no calibratable axes).")
+                    return
+                _build_paper_record_html()          # -> app.merged_record
+                rec = app.merged_record or {}
+                pub = rec.setdefault("metadata", {}).setdefault("publication", {})
+                if not (pub.get("DOI") or "").strip():
+                    doi = _pdf_doi(app.pdf_path)
+                    if not doi:
+                        process_status_text.value = ("Auto-digitized "
+                            f"{done} figure(s), but no DOI found — run KMDS first, "
+                            "then upload.")
+                        return
+                    pub["DOI"] = doi
+                process_status_text.value = f"Uploading {done} auto-digitized figure(s) to Starrydata3…"
+                page.update()
+                import starrydata3_client
+                res = starrydata3_client.push_record(url, key, rec)
+                if res.get("ok"):
+                    process_status_text.value = (
+                        f"✓ Auto-processed & uploaded: SID-{res.get('sid')} "
+                        f"({res.get('curves_indexed')} curves) — "
+                        f"{url.rstrip('/')}/view/{res.get('sid')}")
+                else:
+                    process_status_text.value = f"Upload failed: {res.get('error')}"
+            except Exception as ex:  # noqa: BLE001
+                import traceback; traceback.print_exc()
+                process_status_text.value = f"Auto pipeline failed: {ex}"
+            finally:
+                sd3_auto_btn.disabled = False
+                sd3_upload_btn.disabled = False
+                page.update()
+
+        page.run_thread(_work)
+
     def on_upload_starrydata3(_):
         if not app.kmds_record and not app.fig_digitizations:
             process_status_text.value = "Run KMDS and/or stage a figure first, then upload."
@@ -2750,6 +2898,7 @@ def main(page: ft.Page):
     save_fig_btn.on_click = on_save_fig_to_record
     open_record_btn.on_click = on_open_paper_record
     sd3_upload_btn.on_click = on_upload_starrydata3
+    sd3_auto_btn.on_click = on_auto_pipeline
 
     def save_sd_result(e: ft.FilePickerResultEvent):
         if e.path and app.data_series:
@@ -3221,7 +3370,7 @@ def main(page: ft.Page):
     # One consistent pill silhouette across every action button; per-button
     # colors (e.g. the destructive Delete Line) are set at the constructor.
     for _b in (upload_btn, open_pdf_btn, recrop_btn, review_figures_btn, kmds_btn,
-               save_fig_btn, open_record_btn, sd3_upload_btn, export_sd_btn, export_wpd_btn,
+               save_fig_btn, open_record_btn, sd3_upload_btn, sd3_auto_btn, export_sd_btn, export_wpd_btn,
                verify_btn, detect_markers_btn, axis_fix_btn, label_lines_btn,
                erase_btn, add_btn, apply_btn, done_btn, export_csv_btn,
                api_key_save_btn, kmds_save_btn, kmds_download_btn):
@@ -3334,7 +3483,7 @@ def main(page: ft.Page):
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    wrap=True, run_spacing=8, spacing=8),
-            ft.Row([sd3_upload_btn, sd3_url_field, sd3_key_field],
+            ft.Row([sd3_auto_btn, sd3_upload_btn, sd3_url_field, sd3_key_field],
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    wrap=True, run_spacing=8, spacing=8),
