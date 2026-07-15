@@ -281,6 +281,9 @@ class LineFormerApp:
         self.kmds_record = None
         self.merged_record = None    # KMDS + digitizations, for Starrydata3 upload
         self._auto_digitizing = False
+        # per-figure review gate: {key: {"axes_ok": bool, "extraction_ok": bool}}
+        # a figure uploads only once BOTH are checked by the person.
+        self.fig_reviews = {}
         self.fig_digitizations = {}
 
     def _vlm_screener_available(self):
@@ -1150,16 +1153,20 @@ def main(page: ft.Page):
                 "extracted or a figure is staged.",
     )
     sd3_upload_btn = ft.OutlinedButton(
-        "Upload to Starrydata3", icon=ft.icons.CLOUD_UPLOAD,
-        tooltip="Push this paper's KMDS record (metadata + digitized curves) to "
-                "your Starrydata3 database over its API. Set the URL + key below.",
+        "Upload approved → Starrydata3", icon=ft.icons.CLOUD_UPLOAD,
+        tooltip="Upload ONLY the figures you approved (Axes OK + Extraction OK) "
+                "to your Starrydata3 database. Set the URL + key below.",
     )
     sd3_auto_btn = ft.FilledTonalButton(
-        "Auto: digitize all + upload", icon=ft.icons.AUTO_AWESOME_MOTION,
-        tooltip="One click: auto-calibrate axes and extract curves for EVERY "
-                "figure in the open PDF, then upload the whole paper to "
-                "Starrydata3. Uses the DOI from the PDF (or KMDS if already run).",
+        "Auto-digitize all figures", icon=ft.icons.AUTO_AWESOME_MOTION,
+        tooltip="Auto-calibrate axes and extract curves for EVERY figure in the "
+                "open PDF, then review each (Axes OK + Extraction OK) before "
+                "uploading the approved ones.",
     )
+    # Per-figure review gate — the person confirms BOTH before it can upload.
+    axes_ok_check = ft.Checkbox(label="Axes OK", value=False, disabled=True)
+    extraction_ok_check = ft.Checkbox(label="Extraction OK", value=False, disabled=True)
+    review_status = ft.Text("", size=12, color=INK_3)
     sd3_url_field = ft.TextField(
         label="Starrydata3 URL", dense=True, width=260,
         value=app_settings.get_setting("sd3_url", os.environ.get("ALD_SD3_URL", "")),
@@ -1863,6 +1870,10 @@ def main(page: ft.Page):
                                    and PDF_SUPPORT)
         input_image.src_base64 = image_to_base64(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         input_image.visible = True
+        try:
+            _sync_review_ui()          # reflect this figure's Axes/Extraction checks
+        except Exception:  # noqa: BLE001
+            pass
         page.update()
         page.run_thread(process_image)
 
@@ -1925,22 +1936,32 @@ def main(page: ft.Page):
             return
         pdf_name = os.path.basename(app.pdf_path) if app.pdf_path else "PDF"
         pdf_gallery_title.value = f"{n} figure(s) from {pdf_name}"
+        approved = _approved_keys()
         for idx, (img_bgr, meta) in enumerate(app.pdf_figures):
             thumb_b64 = make_thumb_b64(img_bgr)
             selected = (idx == selected_idx)
             caption = (meta.get("caption") or "").strip()
             label = caption[:22] if caption else f"p{meta.get('page', '?')} #{meta.get('img_idx_on_page', idx + 1)}"
+            # review badge: ✓ approved (green), • digitized-not-approved (amber)
+            if idx in approved:
+                badge = ft.Text("✓ approved", size=9, color=ft.colors.GREEN,
+                                weight=ft.FontWeight.BOLD)
+            elif idx in app.fig_digitizations:
+                badge = ft.Text("• review", size=9, color=ft.colors.AMBER_800)
+            else:
+                badge = ft.Text("", size=9)
             tile = ft.Container(
                 content=ft.Column([
                     ft.Image(src_base64=thumb_b64, width=THUMB_W,
                              fit=ft.ImageFit.FIT_WIDTH),
                     ft.Text(label, size=10, no_wrap=True,
                             color=INK_3),
+                    badge,
                 ], spacing=3, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
                 padding=6, border_radius=10,
                 bgcolor=SELECT if selected else SURFACE,
-                border=ft.border.all(2, ACCENT if selected
-                                     else RULE),
+                border=ft.border.all(2, ft.colors.GREEN if idx in approved
+                                     else (ACCENT if selected else RULE)),
                 on_click=lambda e, _i=idx: on_thumbnail_click(_i),
                 ink=True, tooltip=caption or label,
             )
@@ -2720,6 +2741,53 @@ def main(page: ft.Page):
             process_status_text.value = f"Open record failed: {ex}"
         page.update()
 
+    def _review_key():
+        idx = app.current_figure_idx
+        return idx if idx is not None else "img_current"
+
+    def _approved_keys():
+        """Figure keys the person marked BOTH Axes OK and Extraction OK."""
+        return {k for k, r in app.fig_reviews.items()
+                if r.get("axes_ok") and r.get("extraction_ok")}
+
+    def _n_approved():
+        return len(_approved_keys() & set(app.fig_digitizations.keys()))
+
+    def _sync_review_ui():
+        """Reflect the current figure's review state in the checkboxes."""
+        key = _review_key()
+        has_dig = key in app.fig_digitizations
+        r = app.fig_reviews.get(key, {})
+        axes_ok_check.value = bool(r.get("axes_ok"))
+        extraction_ok_check.value = bool(r.get("extraction_ok"))
+        axes_ok_check.disabled = not has_dig
+        extraction_ok_check.disabled = not has_dig
+        n_ok = _n_approved()
+        n_dig = len(app.fig_digitizations)
+        if not has_dig:
+            review_status.value = "Digitize this figure, then check Axes OK + Extraction OK."
+        elif axes_ok_check.value and extraction_ok_check.value:
+            review_status.value = f"✓ Approved for upload  ·  {n_ok}/{n_dig} figures approved"
+        else:
+            review_status.value = f"Review this figure  ·  {n_ok}/{n_dig} figures approved"
+
+    def _on_review_change(_=None):
+        key = _review_key()
+        if key not in app.fig_digitizations:
+            _sync_review_ui(); page.update(); return
+        app.fig_reviews.setdefault(key, {})
+        app.fig_reviews[key]["axes_ok"] = bool(axes_ok_check.value)
+        app.fig_reviews[key]["extraction_ok"] = bool(extraction_ok_check.value)
+        _sync_review_ui()
+        try:
+            build_gallery(selected_idx=app.current_figure_idx)   # refresh approval badges
+        except Exception:  # noqa: BLE001
+            pass
+        page.update()
+
+    axes_ok_check.on_change = _on_review_change
+    extraction_ok_check.on_change = _on_review_change
+
     def _auto_digitize_all_figures():
         """Hands-free digitization of the whole gallery: for every figure,
         detect + calibrate the axes (ChartDete + OCR) and extract the curves
@@ -2799,67 +2867,50 @@ def main(page: ft.Page):
             return None
 
     def on_auto_pipeline(_):
-        """One click: digitize every figure (axes + curves) and upload the whole
-        paper to Starrydata3. Uses KMDS metadata if already extracted, otherwise
-        a DOI read from the PDF — no paid API needed for the digitize+upload path."""
+        """Auto-digitize EVERY figure (calibrate axes + extract curves), then
+        stop for review — the person confirms Axes OK + Extraction OK on each
+        before uploading. Does NOT upload; that is the gated 'Upload approved'
+        step."""
         if not (app.pdf_path and str(app.pdf_path).lower().endswith(".pdf")):
             process_status_text.value = "Open a PDF first."
             page.update()
             return
-        url = (sd3_url_field.value or "").strip()
-        key = (sd3_key_field.value or "").strip()
-        if not url or not key:
-            process_status_text.value = "Set the Starrydata3 URL and API key first."
-            page.update()
-            return
-        app_settings.set_setting("sd3_url", url)
-        app_settings.set_setting("sd3_key", key)
         sd3_auto_btn.disabled = True
-        sd3_upload_btn.disabled = True
         page.update()
 
         def _work():
             try:
                 done = _auto_digitize_all_figures()
+                n = len(app.pdf_figures)
                 if not app.fig_digitizations:
                     process_status_text.value = (
-                        "No figures could be auto-digitized (no calibratable axes).")
-                    return
-                _build_paper_record_html()          # -> app.merged_record
-                rec = app.merged_record or {}
-                pub = rec.setdefault("metadata", {}).setdefault("publication", {})
-                if not (pub.get("DOI") or "").strip():
-                    doi = _pdf_doi(app.pdf_path)
-                    if not doi:
-                        process_status_text.value = ("Auto-digitized "
-                            f"{done} figure(s), but no DOI found — run KMDS first, "
-                            "then upload.")
-                        return
-                    pub["DOI"] = doi
-                process_status_text.value = f"Uploading {done} auto-digitized figure(s) to Starrydata3…"
-                page.update()
-                import starrydata3_client
-                res = starrydata3_client.push_record(url, key, rec)
-                if res.get("ok"):
-                    process_status_text.value = (
-                        f"✓ Auto-processed & uploaded: SID-{res.get('sid')} "
-                        f"({res.get('curves_indexed')} curves) — "
-                        f"{url.rstrip('/')}/view/{res.get('sid')}")
+                        f"No figures could be auto-digitized ({n} figure(s); no "
+                        "calibratable axes were found). Open a figure and digitize "
+                        "it manually, then review it.")
                 else:
-                    process_status_text.value = f"Upload failed: {res.get('error')}"
+                    process_status_text.value = (
+                        f"✓ Auto-digitized {done}/{n} figure(s). Now open each, check "
+                        "Axes OK + Extraction OK, then click “Upload approved”.")
+                try:
+                    _sync_review_ui()
+                    build_gallery(selected_idx=app.current_figure_idx)
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception as ex:  # noqa: BLE001
                 import traceback; traceback.print_exc()
-                process_status_text.value = f"Auto pipeline failed: {ex}"
+                process_status_text.value = f"Auto-digitize failed: {ex}"
             finally:
                 sd3_auto_btn.disabled = False
-                sd3_upload_btn.disabled = False
                 page.update()
 
         page.run_thread(_work)
 
     def on_upload_starrydata3(_):
-        if not app.kmds_record and not app.fig_digitizations:
-            process_status_text.value = "Run KMDS and/or stage a figure first, then upload."
+        """Upload ONLY the figures the person approved (Axes OK + Extraction OK)."""
+        approved = _approved_keys() & set(app.fig_digitizations.keys())
+        if not approved and not app.kmds_record:
+            process_status_text.value = ("Nothing approved yet — open each figure and "
+                "check Axes OK + Extraction OK, then upload.")
             page.update()
             return
         url = (sd3_url_field.value or "").strip()
@@ -2868,32 +2919,45 @@ def main(page: ft.Page):
             process_status_text.value = "Set the Starrydata3 URL and API key first."
             page.update()
             return
-        # persist the URL/key (per-user, 0600) so they stick across sessions
         app_settings.set_setting("sd3_url", url)
         app_settings.set_setting("sd3_key", key)
         sd3_upload_btn.disabled = True
-        process_status_text.value = "Uploading to Starrydata3…"
+        process_status_text.value = f"Uploading {len(approved)} approved figure(s) to Starrydata3…"
         page.update()
 
         def _work():
+            all_digs = app.fig_digitizations
             try:
-                _build_paper_record_html()          # refresh app.merged_record
+                # build the record from ONLY the approved figures
+                app.fig_digitizations = {k: v for k, v in all_digs.items() if k in approved}
+                _build_paper_record_html()          # -> app.merged_record
+                rec = app.merged_record or {}
+                pub = rec.setdefault("metadata", {}).setdefault("publication", {})
+                if not (pub.get("DOI") or "").strip():
+                    doi = _pdf_doi(app.pdf_path) if app.pdf_path else None
+                    if not doi:
+                        process_status_text.value = ("Approved figures ready, but no "
+                            "DOI — run KMDS first (or ensure the PDF has a DOI), then upload.")
+                        return
+                    pub["DOI"] = doi
                 import starrydata3_client
-                res = starrydata3_client.push_record(url, key, app.merged_record or {})
+                res = starrydata3_client.push_record(url, key, rec)
             except Exception as ex:  # noqa: BLE001
                 res = {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
-            sd3_upload_btn.disabled = False
+            finally:
+                app.fig_digitizations = all_digs     # always restore the full set
             if res.get("ok"):
                 base = url.rstrip("/")
                 nonk = res.get("non_kmds_properties") or []
                 nonk_note = (f"  ⚠ non-KMDS props: {', '.join(nonk[:4])}" if nonk else "")
                 process_status_text.value = (
-                    f"✓ Uploaded to Starrydata3 as SID-{res.get('sid')} "
+                    f"✓ Uploaded {len(approved)} approved figure(s) as SID-{res.get('sid')} "
                     f"({res.get('curves_indexed')} curves, "
                     f"{res.get('kmds_curves')} KMDS-conformant) — "
                     f"{base}/view/{res.get('sid')}{nonk_note}")
             else:
                 process_status_text.value = f"Starrydata3 upload failed: {res.get('error')}"
+            sd3_upload_btn.disabled = False
             page.update()
 
         page.run_thread(_work)
@@ -3486,7 +3550,12 @@ def main(page: ft.Page):
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    wrap=True, run_spacing=8, spacing=8),
-            ft.Row([sd3_auto_btn, sd3_upload_btn, sd3_url_field, sd3_key_field],
+            ft.Row([sd3_auto_btn, _vsep(),
+                    axes_ok_check, extraction_ok_check, review_status],
+                   alignment=ft.MainAxisAlignment.START,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                   wrap=True, run_spacing=8, spacing=8),
+            ft.Row([sd3_upload_btn, sd3_url_field, sd3_key_field],
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    wrap=True, run_spacing=8, spacing=8),
