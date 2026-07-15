@@ -2885,10 +2885,13 @@ def main(page: ft.Page):
             sd3_upload_btn.disabled = False
             if res.get("ok"):
                 base = url.rstrip("/")
+                nonk = res.get("non_kmds_properties") or []
+                nonk_note = (f"  ⚠ non-KMDS props: {', '.join(nonk[:4])}" if nonk else "")
                 process_status_text.value = (
                     f"✓ Uploaded to Starrydata3 as SID-{res.get('sid')} "
                     f"({res.get('curves_indexed')} curves, "
-                    f"{res.get('n_violations')} schema notes) — {base}/view/{res.get('sid')}")
+                    f"{res.get('kmds_curves')} KMDS-conformant) — "
+                    f"{base}/view/{res.get('sid')}{nonk_note}")
             else:
                 process_status_text.value = f"Starrydata3 upload failed: {res.get('error')}"
             page.update()
