@@ -39,5 +39,6 @@ def push_record(url: str, api_key: str, record: Dict[str, Any],
     return {"ok": True, "sid": body.get("sid"), "doi": body.get("doi"),
             "curves_indexed": body.get("curves_indexed"),
             "kmds_curves": body.get("kmds_curves"),
+            "unit_normalized_curves": body.get("unit_normalized_curves"),
             "non_kmds_properties": body.get("non_kmds_properties") or [],
             "n_violations": body.get("n_violations"), "url": url}

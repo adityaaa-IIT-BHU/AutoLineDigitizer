@@ -3084,10 +3084,12 @@ def main(page: ft.Page):
                 base = url.rstrip("/")
                 nonk = res.get("non_kmds_properties") or []
                 nonk_note = (f"  ⚠ non-KMDS props: {', '.join(nonk[:4])}" if nonk else "")
+                un = res.get("unit_normalized_curves")
+                un_note = f", {un} unit-normalized" if un else ""
                 process_status_text.value = (
                     f"✓ Uploaded {len(approved)} approved figure(s) as SID-{res.get('sid')} "
                     f"({res.get('curves_indexed')} curves, "
-                    f"{res.get('kmds_curves')} KMDS-conformant) — "
+                    f"{res.get('kmds_curves')} KMDS-conformant{un_note}) — "
                     f"{base}/view/{res.get('sid')}{nonk_note}")
             else:
                 process_status_text.value = f"Starrydata3 upload failed: {res.get('error')}"
