@@ -1097,6 +1097,12 @@ def main(page: ft.Page):
         tooltip="Re-crop this figure from its source PDF page (drag a new box). "
                 "Use when the auto-crop is too tight or too loose.",
     )
+    delete_fig_btn = ft.OutlinedButton(
+        "Delete figure", icon=ft.icons.DELETE_OUTLINE, disabled=True,
+        icon_color=ft.colors.RED_400,
+        tooltip="Remove the current figure from the gallery (e.g. a photo, "
+                "schematic, or non-chart) so it isn't digitized or uploaded.",
+    )
 
     # PDF extraction strategy. AI page detection (render every page + Claude
     # bbox detection) is the high-quality default; uncheck for fast offline
@@ -1157,12 +1163,6 @@ def main(page: ft.Page):
         "Upload approved → Starrydata3", icon=ft.icons.CLOUD_UPLOAD,
         tooltip="Upload ONLY the figures you approved (Axes OK + Extraction OK) "
                 "to your Starrydata3 database. Set the URL + key below.",
-    )
-    sd3_auto_btn = ft.FilledTonalButton(
-        "Auto-digitize all figures", icon=ft.icons.AUTO_AWESOME_MOTION,
-        tooltip="Auto-calibrate axes and extract curves for EVERY figure in the "
-                "open PDF, then review each (Axes OK + Extraction OK) before "
-                "uploading the approved ones.",
     )
     # Per-figure review gate — the person confirms BOTH before it can upload.
     axes_ok_check = ft.Checkbox(label="Axes OK", value=False, disabled=True)
@@ -1833,6 +1833,26 @@ def main(page: ft.Page):
                         y_axis_name_field.value = y_name
                         app.y_axis_name = y_name
 
+                    # Name each curve by its legend entry (deterministic, by
+                    # swatch color) — turns "Line N" into the real sample.
+                    try:
+                        import legend_mapper
+                        series_px = [s["points"] for s in app.data_series]
+                        names = legend_mapper.map_curves_to_legend(
+                            app.current_image, getattr(app, "_last_detections", {}) or {},
+                            series_px, app.chartdete_module.get_ocr_reader())
+                        if any(names):
+                            for i, nm in enumerate(names):
+                                if nm and i < len(app.data_series):
+                                    app.data_series[i]["label"] = nm
+                            populate_detected_lines()
+                            update_data_table()
+                            n_named = sum(1 for nm in names if nm)
+                            process_status_text.value = (
+                                f"Named {n_named}/{len(names)} curve(s) from the legend.")
+                    except Exception as ex:  # noqa: BLE001
+                        print(f"[legend] {ex}")
+
             if app.axis_config is not None:
                 axis_info_text.value = f"Axis: X=[{app.axis_config['x1_val']} → {app.axis_config['x2_val']}], Y=[{app.axis_config['y1_val']} → {app.axis_config['y2_val']}]"
             elif app.auto_axis:
@@ -1850,6 +1870,10 @@ def main(page: ft.Page):
             detect_markers_btn.disabled = not MARKER_DETECTOR_AVAILABLE
             axis_fix_btn.disabled = not (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE)
             label_lines_btn.disabled = not (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE)
+            try:
+                _sync_review_ui()   # this figure is now digitized -> enable Axes/Extraction checks
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as e:
             process_status_text.value = f"Error: {e}"
             process_progress_ring.visible = False
@@ -1869,6 +1893,7 @@ def main(page: ft.Page):
         # Recrop only makes sense for a figure that came from the current PDF.
         recrop_btn.disabled = not (figure_idx is not None and app.pdf_path
                                    and PDF_SUPPORT)
+        delete_fig_btn.disabled = figure_idx is None or not app.pdf_figures
         input_image.src_base64 = image_to_base64(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         input_image.visible = True
         try:
@@ -2200,6 +2225,48 @@ def main(page: ft.Page):
         ft.FilledButton("Apply crop", icon=ft.icons.CHECK, on_click=on_recrop_apply),
     ]
     recrop_btn.on_click = on_recrop_click
+
+    def on_delete_figure(_):
+        idx = app.current_figure_idx
+        if idx is None or not (0 <= idx < len(app.pdf_figures)):
+            process_status_text.value = "No figure selected to delete."
+            page.update()
+            return
+        del app.pdf_figures[idx]
+
+        # int keys are figure indices; deleting one shifts higher indices down.
+        def _reindex(d):
+            out = {}
+            for k, v in d.items():
+                if isinstance(k, int):
+                    if k == idx:
+                        continue
+                    out[k - 1 if k > idx else k] = v
+                else:
+                    out[k] = v
+            return out
+        app.fig_digitizations = _reindex(app.fig_digitizations)
+        app.fig_reviews = _reindex(app.fig_reviews)
+        # don't let the just-deleted figure get re-staged on the next load
+        app.current_figure_idx = None
+        app.data_series = None
+
+        if app.pdf_figures:
+            on_thumbnail_click(min(idx, len(app.pdf_figures) - 1))
+        else:
+            build_gallery()
+            input_image.visible = False
+            result_image.visible = False
+            delete_fig_btn.disabled = True
+            recrop_btn.disabled = True
+        try:
+            _sync_review_ui()
+        except Exception:  # noqa: BLE001
+            pass
+        process_status_text.value = f"Figure deleted — {len(app.pdf_figures)} left in the gallery."
+        page.update()
+
+    delete_fig_btn.on_click = on_delete_figure
 
     # ---- KMDS metadata extraction (whole PDF -> EN + JA structured JSON) ----
     def _kmds_build_editor(record):
@@ -2754,28 +2821,40 @@ def main(page: ft.Page):
     def _n_approved():
         return len(_approved_keys() & set(app.fig_digitizations.keys()))
 
+    def _reviewable():
+        """A figure can be reviewed once it has been digitized — either already
+        staged into the record, or currently extracted (live data_series)."""
+        return (_review_key() in app.fig_digitizations) or bool(app.data_series)
+
     def _sync_review_ui():
         """Reflect the current figure's review state in the checkboxes."""
         key = _review_key()
-        has_dig = key in app.fig_digitizations
         r = app.fig_reviews.get(key, {})
         axes_ok_check.value = bool(r.get("axes_ok"))
         extraction_ok_check.value = bool(r.get("extraction_ok"))
-        axes_ok_check.disabled = not has_dig
-        extraction_ok_check.disabled = not has_dig
+        reviewable = _reviewable()
+        axes_ok_check.disabled = not reviewable
+        extraction_ok_check.disabled = not reviewable
         n_ok = _n_approved()
         n_dig = len(app.fig_digitizations)
-        if not has_dig:
-            review_status.value = "Digitize this figure, then check Axes OK + Extraction OK."
+        if not reviewable:
+            review_status.value = "Digitize this figure first, then check Axes OK + Extraction OK."
         elif axes_ok_check.value and extraction_ok_check.value:
-            review_status.value = f"✓ Approved for upload  ·  {n_ok}/{n_dig} figures approved"
+            review_status.value = f"✓ Approved for upload  ·  {n_ok} figure(s) approved"
         else:
-            review_status.value = f"Review this figure  ·  {n_ok}/{n_dig} figures approved"
+            review_status.value = f"Review this figure  ·  {n_ok} figure(s) approved"
 
     def _on_review_change(_=None):
+        # Stage the current figure so it has a stable key in the record, then
+        # record the review. Staging a live-but-unstaged figure is what makes
+        # the checkboxes actually do something.
+        if app.current_figure_idx is not None and app.data_series:
+            if app.current_figure_idx not in app.fig_digitizations:
+                try:
+                    _stage_current_figure(silent=False)
+                except Exception:  # noqa: BLE001
+                    pass
         key = _review_key()
-        if key not in app.fig_digitizations:
-            _sync_review_ui(); page.update(); return
         app.fig_reviews.setdefault(key, {})
         app.fig_reviews[key]["axes_ok"] = bool(axes_ok_check.value)
         app.fig_reviews[key]["extraction_ok"] = bool(extraction_ok_check.value)
@@ -2881,45 +2960,6 @@ def main(page: ft.Page):
         except Exception:  # noqa: BLE001
             return None
 
-    def on_auto_pipeline(_):
-        """Auto-digitize EVERY figure (calibrate axes + extract curves), then
-        stop for review — the person confirms Axes OK + Extraction OK on each
-        before uploading. Does NOT upload; that is the gated 'Upload approved'
-        step."""
-        if not (app.pdf_path and str(app.pdf_path).lower().endswith(".pdf")):
-            process_status_text.value = "Open a PDF first."
-            page.update()
-            return
-        sd3_auto_btn.disabled = True
-        page.update()
-
-        def _work():
-            try:
-                done = _auto_digitize_all_figures()
-                n = len(app.pdf_figures)
-                if not app.fig_digitizations:
-                    process_status_text.value = (
-                        f"No figures could be auto-digitized ({n} figure(s); no "
-                        "calibratable axes were found). Open a figure and digitize "
-                        "it manually, then review it.")
-                else:
-                    process_status_text.value = (
-                        f"✓ Auto-digitized {done}/{n} figure(s). Now open each, check "
-                        "Axes OK + Extraction OK, then click “Upload approved”.")
-                try:
-                    _sync_review_ui()
-                    build_gallery(selected_idx=app.current_figure_idx)
-                except Exception:  # noqa: BLE001
-                    pass
-            except Exception as ex:  # noqa: BLE001
-                import traceback; traceback.print_exc()
-                process_status_text.value = f"Auto-digitize failed: {ex}"
-            finally:
-                sd3_auto_btn.disabled = False
-                page.update()
-
-        page.run_thread(_work)
-
     def on_upload_starrydata3(_):
         """Upload ONLY the figures the person approved (Axes OK + Extraction OK)."""
         approved = _approved_keys() & set(app.fig_digitizations.keys())
@@ -2980,7 +3020,6 @@ def main(page: ft.Page):
     save_fig_btn.on_click = on_save_fig_to_record
     open_record_btn.on_click = on_open_paper_record
     sd3_upload_btn.on_click = on_upload_starrydata3
-    sd3_auto_btn.on_click = on_auto_pipeline
 
     def save_sd_result(e: ft.FilePickerResultEvent):
         if e.path and app.data_series:
@@ -3451,8 +3490,8 @@ def main(page: ft.Page):
 
     # One consistent pill silhouette across every action button; per-button
     # colors (e.g. the destructive Delete Line) are set at the constructor.
-    for _b in (upload_btn, open_pdf_btn, recrop_btn, review_figures_btn, kmds_btn,
-               save_fig_btn, open_record_btn, sd3_upload_btn, sd3_auto_btn, export_sd_btn, export_wpd_btn,
+    for _b in (upload_btn, open_pdf_btn, recrop_btn, delete_fig_btn, review_figures_btn, kmds_btn,
+               save_fig_btn, open_record_btn, sd3_upload_btn, export_sd_btn, export_wpd_btn,
                verify_btn, detect_markers_btn, axis_fix_btn, label_lines_btn,
                erase_btn, add_btn, apply_btn, done_btn, export_csv_btn,
                api_key_save_btn, kmds_save_btn, kmds_download_btn):
@@ -3559,14 +3598,13 @@ def main(page: ft.Page):
         ft.Column([
             ft.Row([upload_btn, open_pdf_btn,
                     _vsep(),
-                    pdf_detector_dropdown, review_figures_btn, recrop_btn,
+                    pdf_detector_dropdown, review_figures_btn, recrop_btn, delete_fig_btn,
                     _vsep(),
                     kmds_btn, save_fig_btn, open_record_btn],
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    wrap=True, run_spacing=8, spacing=8),
-            ft.Row([sd3_auto_btn, _vsep(),
-                    axes_ok_check, extraction_ok_check, review_status],
+            ft.Row([axes_ok_check, extraction_ok_check, review_status],
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    wrap=True, run_spacing=8, spacing=8),
