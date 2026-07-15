@@ -419,6 +419,7 @@ class LineFormerApp:
         if self.chartdete_module is None:
             return None, None
         detections = self.chartdete_module.detect_chart_elements(img, score_thr=0.3)
+        self._last_detections = detections   # legend_patch/legend_label for legend mapping
         axis_info = self.chartdete_module.get_axis_info(detections, img=img, with_ocr=True)
         plot_area = axis_info.get('plot_area')
         ocr_results = axis_info.get('ocr_results', {})
@@ -2825,13 +2826,27 @@ def main(page: ft.Page):
                     line_ds = app.infer_module.get_dataseries(img_bgr, to_clean=False)
                     series_px = [[[int(p["x"]), int(p["y"])] for p in line]
                                  for line in line_ds if len(line)]
-                    series = [[list(app.pixel_to_data_cfg(cfg, p[0], p[1]))
-                               for p in app.downsample_points(pts)]
-                              for pts in series_px]
-                    series = [s for s in series if len(s) >= 3]
-                    if not series:
+                    # keep pixel series aligned with data series for legend color-matching
+                    kept = [(pxs, [list(app.pixel_to_data_cfg(cfg, p[0], p[1]))
+                                   for p in app.downsample_points(pxs)])
+                            for pxs in series_px]
+                    kept = [(pxs, s) for pxs, s in kept if len(s) >= 3]
+                    if not kept:
                         continue
+                    series = [s for _, s in kept]
+                    kept_px = [pxs for pxs, _ in kept]
                     x_name, y_name = app.get_axis_titles(ocr)
+                    # legend -> curve mapping (deterministic, by swatch color)
+                    names = None
+                    try:
+                        import legend_mapper
+                        mapped = legend_mapper.map_curves_to_legend(
+                            img_bgr, getattr(app, "_last_detections", {}) or {},
+                            kept_px, app.chartdete_module.get_ocr_reader())
+                        if any(mapped):
+                            names = [m or f"Line {i + 1}" for i, m in enumerate(mapped)]
+                    except Exception as ex:  # noqa: BLE001
+                        print(f"[legend] figure {idx + 1}: {ex}")
                     label = (meta.get("caption") or "").strip() or f"Figure {idx + 1}"
                     app.fig_digitizations[idx] = {
                         "label": label, "page": meta.get("page"),
@@ -2841,7 +2856,7 @@ def main(page: ft.Page):
                         "n_lines": len(series),
                         "n_points": sum(len(s) for s in series),
                         "series": series,
-                        "series_names": [f"Line {i + 1}" for i in range(len(series))],
+                        "series_names": names or [f"Line {i + 1}" for i in range(len(series))],
                         "auto": True,
                     }
                     done += 1
