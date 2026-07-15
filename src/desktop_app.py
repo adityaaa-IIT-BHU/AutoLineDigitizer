@@ -1168,6 +1168,8 @@ def main(page: ft.Page):
     axes_ok_check = ft.Checkbox(label="Axes OK", value=False, disabled=True)
     extraction_ok_check = ft.Checkbox(label="Extraction OK", value=False, disabled=True)
     review_status = ft.Text("", size=12, color=INK_3)
+    # what was recorded for the current figure — checked before approval
+    review_props = ft.Text("", size=12, selectable=True, color=INK_2)
     sd3_url_field = ft.TextField(
         label="Starrydata3 URL", dense=True, width=260,
         value=app_settings.get_setting("sd3_url", os.environ.get("ALD_SD3_URL", "")),
@@ -2826,6 +2828,30 @@ def main(page: ft.Page):
         staged into the record, or currently extracted (live data_series)."""
         return (_review_key() in app.fig_digitizations) or bool(app.data_series)
 
+    def _figure_properties_summary():
+        """What was recorded for the current figure — axis properties + the
+        per-curve sample names — so the reviewer can verify before approving."""
+        key = _review_key()
+        dig = app.fig_digitizations.get(key)
+        if dig:
+            xn, yn = dig.get("x_name", "?"), dig.get("y_name", "?")
+            lx = " log" if dig.get("is_log_x") else ""
+            ly = " log" if dig.get("is_log_y") else ""
+            names = dig.get("series_names") or []
+            counts = [len(s) for s in (dig.get("series") or [])]
+        elif app.data_series:
+            xn = (x_axis_name_field.value or "").strip() or "X"
+            yn = (y_axis_name_field.value or "").strip() or "Y"
+            cfg = app.axis_config or {}
+            lx = " log" if cfg.get("xIsLogScale") else ""
+            ly = " log" if cfg.get("yIsLogScale") else ""
+            names = [app.line_name(i) for i in range(len(app.data_series))]
+            counts = [len(s.get("points", [])) for s in app.data_series]
+        else:
+            return ""
+        curves = "  ·  ".join(f"{n} ({c} pt)" for n, c in zip(names, counts)) or "(none)"
+        return f"Recorded →  X: {xn}{lx}    Y: {yn}{ly}\nCurves: {curves}"
+
     def _sync_review_ui():
         """Reflect the current figure's review state in the checkboxes."""
         key = _review_key()
@@ -2835,6 +2861,7 @@ def main(page: ft.Page):
         reviewable = _reviewable()
         axes_ok_check.disabled = not reviewable
         extraction_ok_check.disabled = not reviewable
+        review_props.value = _figure_properties_summary() if reviewable else ""
         n_ok = _n_approved()
         n_dig = len(app.fig_digitizations)
         if not reviewable:
@@ -3608,6 +3635,7 @@ def main(page: ft.Page):
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    wrap=True, run_spacing=8, spacing=8),
+            review_props,
             ft.Row([sd3_upload_btn, sd3_url_field, sd3_key_field],
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
