@@ -1169,7 +1169,7 @@ def main(page: ft.Page):
     extraction_ok_check = ft.Checkbox(label="Extraction OK", value=False, disabled=True)
     review_status = ft.Text("", size=12, color=INK_3)
     # what was recorded for the current figure — checked before approval
-    review_props = ft.Text("", size=12, selectable=True, color=INK_2)
+    review_props = ft.Text("", size=12, selectable=True, color=INK_3)
     sd3_url_field = ft.TextField(
         label="Starrydata3 URL", dense=True, width=260,
         value=app_settings.get_setting("sd3_url", os.environ.get("ALD_SD3_URL", "")),
