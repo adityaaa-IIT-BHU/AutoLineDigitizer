@@ -2053,8 +2053,36 @@ def main(page: ft.Page):
         review_figures_btn.disabled = not (app._vlm_screener_available()
                                            and str(app.pdf_path).lower().endswith(".pdf"))
         build_gallery()
+        # Reuse an already-extracted KMDS record if one is saved next to the PDF
+        # (so testing doesn't re-run the paid extraction).
+        _try_load_existing_kmds(pdf_path)
         # Auto-load the first figure so the user sees results immediately.
         on_thumbnail_click(0)
+
+    def _try_load_existing_kmds(pdf_path):
+        try:
+            base = Path(pdf_path).stem
+            out_dir = os.path.join(os.path.dirname(pdf_path) or ".", f"{base}_kmds")
+            en_path = os.path.join(out_dir, f"{base}.json")
+            if not os.path.exists(en_path):
+                return
+            with open(en_path, "r", encoding="utf-8") as f:
+                app.kmds_record = json.load(f)
+            kmds_paths["en"] = en_path
+            ja_path = os.path.join(out_dir, f"{base}_ja.json")
+            kmds_paths["ja"] = ja_path if os.path.exists(ja_path) else None
+            kmds_paths["dir"] = out_dir
+            kmds_title.value = "KMDS metadata (English) — loaded from disk"
+            kmds_summary_text.value = (f"Reusing saved KMDS metadata (no re-extraction).\n"
+                                       f"Loaded: {en_path}")
+            _kmds_load_json(en_path, "(could not read saved KMDS JSON)")
+            kmds_ja_btn.disabled = not kmds_paths["ja"]
+            kmds_panel.visible = True
+            open_record_btn.disabled = False
+            process_status_text.value = (process_status_text.value +
+                                         "  ·  reusing saved KMDS metadata")
+        except Exception as ex:  # noqa: BLE001
+            print(f"[kmds] could not load existing record: {ex}")
 
     def pick_pdf_result(e: ft.FilePickerResultEvent):
         if e.files and len(e.files) > 0:
