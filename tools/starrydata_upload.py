@@ -19,6 +19,14 @@ Usage:
   external/pw-venv/bin/python tools/starrydata_upload.py export.json            # DRY-RUN (default)
   external/pw-venv/bin/python tools/starrydata_upload.py export.json --commit   # actually write (staging)
   external/pw-venv/bin/python tools/starrydata_upload.py export.json --commit --base https://starrydata.nims.go.jp  # production
+  external/pw-venv/bin/python tools/starrydata_upload.py export.json --commit --fresh   # ignore cached login, log in again
+
+You log in ONCE: the first --commit opens a browser to log in (incl. MFA), then
+caches the authenticated session to ~/.starrydata_session.json (0600). Later
+uploads reuse that session silently — no browser, no re-login — until it
+expires, then it prompts once more. --session <file> picks a different cache;
+--fresh forces a new login. (Fully unattended, zero-login automation would need
+a service account / API token without MFA — a request for Mato-san.)
 
 DRY-RUN prints every request it WOULD send and writes nothing.
 
@@ -40,6 +48,7 @@ Export JSON shape (also produced by build_export_from_kmds()):
 }
 """
 import json
+import os
 import sys
 import urllib.parse
 from typing import Any, Dict, List, Optional
@@ -49,6 +58,8 @@ from typing import Any, Dict, List, Optional
 DEFAULT_BASE = "https://starrydata-stg.nims.go.jp"
 DEFAULT_PREFIX = "/starrydata2"
 DEFAULT_PROJECT = "GeneralDB"
+# Where the authenticated browser session is cached so you only log in once.
+DEFAULT_SESSION_FILE = os.path.expanduser("~/.starrydata_session.json")
 
 
 def _xydata(points: List[List[float]]) -> str:
@@ -102,11 +113,13 @@ class StarrydataClient:
     cookies and CSRF token. dry_run=True (default) sends nothing."""
 
     def __init__(self, base: str = DEFAULT_BASE, project: str = DEFAULT_PROJECT,
-                 dry_run: bool = True, prefix: str = DEFAULT_PREFIX):
+                 dry_run: bool = True, prefix: str = DEFAULT_PREFIX,
+                 session_file: Optional[str] = DEFAULT_SESSION_FILE):
         self.base = base.rstrip("/")
         self.prefix = "/" + prefix.strip("/")     # app mount, e.g. /starrydata2
         self.project = project
         self.dry_run = dry_run
+        self.session_file = session_file          # cached login; None = don't cache
         self._pw = self._browser = self._ctx = self._page = None
         self.sent = []   # log of committed requests (or would-be, in dry-run)
 
@@ -114,18 +127,80 @@ class StarrydataClient:
         return self.base + self.prefix + path
 
     # -- session -------------------------------------------------------------
-    def login_interactive(self, timeout_s: int = 420):
-        """Open the browser and WAIT (poll) until the user has logged in —
-        detected by a Django sessionid cookie once we're off the login/MFA
-        pages. No terminal input needed, so this works when launched headless
-        of a TTY."""
-        import time
+    def login(self, timeout_s: int = 420, force: bool = False):
+        """Establish an authenticated session, reusing a cached one so a person
+        only logs in ONCE (incl. MFA) rather than every upload.
+
+        1. If a saved session exists and still works, reuse it silently — no
+           browser, no login.
+        2. Otherwise open the browser for an interactive login and save the
+           session (cookies) to session_file (0600) for next time.
+
+        force=True skips the cache and always logs in fresh."""
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
+
+        # 1) try the cached session, headlessly — no window if it still works.
+        if not force and self.session_file and os.path.exists(self.session_file):
+            self._browser = self._pw.chromium.launch(headless=True)
+            self._ctx = self._browser.new_context(storage_state=self.session_file)
+            self._page = self._ctx.new_page()
+            if self._session_valid():
+                print(f"  ✓ reused saved session ({self.session_file}) — "
+                      f"no login needed.", flush=True)
+                return True
+            print("  · saved session expired — opening browser to log in again.",
+                  flush=True)
+            self._teardown_browser()
+
+        # 2) interactive login in a visible window, then cache it.
         self._browser = self._pw.chromium.launch(headless=False)
         self._ctx = self._browser.new_context()
         self._page = self._ctx.new_page()
         self._page.goto(self.base + self.prefix + "/", wait_until="domcontentloaded")
+        ok = self._await_login(timeout_s)
+        if ok and self.session_file:
+            try:
+                self._ctx.storage_state(path=self.session_file)
+                os.chmod(self.session_file, 0o600)
+                print(f"  ✓ session saved to {self.session_file} — future uploads "
+                      f"reuse it, no re-login.", flush=True)
+            except Exception as ex:  # noqa: BLE001
+                print(f"  · could not cache session ({ex}); you'll log in again "
+                      f"next time.", flush=True)
+        return ok
+
+    # Back-compat alias: older callers expect login_interactive().
+    def login_interactive(self, timeout_s: int = 420):
+        return self.login(timeout_s=timeout_s)
+
+    def _session_valid(self) -> bool:
+        """Does the loaded session still authenticate? Hit the app root and
+        confirm the server doesn't bounce us to the login/MFA page (an expired
+        sessionid cookie survives in storage but the server rejects it)."""
+        names = {c["name"] for c in self._ctx.cookies()}
+        if "sessionid" not in names:
+            return False
+        try:
+            resp = self._ctx.request.get(self.base + self.prefix + "/")
+            final = (getattr(resp, "url", "") or "").lower()
+            return resp.ok and "/login" not in final and "/mfa" not in final
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _teardown_browser(self):
+        """Close the browser/context but keep the Playwright driver running."""
+        for obj, meth in ((self._ctx, "close"), (self._browser, "close")):
+            try:
+                getattr(obj, meth)()
+            except Exception:
+                pass
+        self._ctx = self._browser = self._page = None
+
+    def _await_login(self, timeout_s: int = 420):
+        """Poll until the user has logged in — detected by a Django sessionid
+        cookie once we're off the login/MFA pages. No terminal input needed."""
+        import time
         print("\n" + "=" * 60)
         print("  Log in to Starrydata in the browser window (incl. MFA),")
         print("  then open your database / paper list. I'll detect it and")
@@ -460,12 +535,16 @@ def main():
     pk_override = args[args.index("--pk") + 1] if "--pk" in args else None
     no_add = "--no-add" in args     # skip registration; paper must already exist
     listname = args[args.index("--list") + 1] if "--list" in args else "all"
+    session_file = (args[args.index("--session") + 1] if "--session" in args
+                    else DEFAULT_SESSION_FILE)
+    fresh = "--fresh" in args        # ignore the cached session, log in again
     export = json.load(open(export_path, encoding="utf-8"))
 
-    client = StarrydataClient(base=base, dry_run=not commit, prefix=prefix)
+    client = StarrydataClient(base=base, dry_run=not commit, prefix=prefix,
+                              session_file=session_file)
     print(f"\n{'🚀 COMMIT' if commit else '🧪 DRY-RUN'} mode | {base}{client.prefix}", flush=True)
     if commit:
-        if not client.login_interactive():
+        if not client.login(force=fresh):
             client.close()
             return
     try:
