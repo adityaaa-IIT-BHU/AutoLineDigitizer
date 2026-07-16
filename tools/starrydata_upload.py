@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """
 starrydata_upload.py — push AutoLineDigitizer digitizations into Starrydata
-through its own web endpoints, reusing YOUR interactive login (no passwords in
-this code). Built from the API captured by record_starrydata.py.
+using Starrydata2's OFFICIAL internal API (Tomoya Mato, starrydata_internal_api.yaml),
+reusing YOUR interactive login (no passwords in this code).
 
-Write path (one endpoint does most of the work):
-  POST /starrydata2/paperlist/uploadpaper/all   {doi}          -> resolve DOI -> paper pk
-  POST /starrydata2/paperlist/postdata/<pk>/<project>          -> create figure+sample+points
+Write path (official endpoints, app mounted at /starrydata2):
+  POST /paper/uploadpaper/{listname}/   {doi, projectname}   -> upsert paper, get pk
+  GET  /paper/getpaperlist/{listname}/  ?projectname=        -> resolve DOI -> pk (fallback)
+  POST /paper/postdata/{pk}/{project}/                       -> create/update figure+sample+points
       property_x, property_y, unit_x, unit_y, xmulti, ymulti,
-      caption, fignum, samplename, composition, comments(JSON), xydata("x, y\\n...")
+      caption, fignum (upsert key), samplename, composition, comments(JSON),
+      xydata("x, y\\n..."). Units are validated against SI dimension server-side.
+
+Defaults to the STAGING server (starrydata-stg.nims.go.jp, NIMS network only) so
+tests never touch production.
 
 Usage:
   external/pw-venv/bin/python tools/starrydata_upload.py export.json            # DRY-RUN (default)
-  external/pw-venv/bin/python tools/starrydata_upload.py export.json --commit   # actually write
-  external/pw-venv/bin/python tools/starrydata_upload.py export.json --base https://starrydata-stg.nims.go.jp
+  external/pw-venv/bin/python tools/starrydata_upload.py export.json --commit   # actually write (staging)
+  external/pw-venv/bin/python tools/starrydata_upload.py export.json --commit --base https://starrydata.nims.go.jp  # production
 
-DRY-RUN prints every request it WOULD send and writes nothing. Always dry-run
-against staging or a test paper before --commit to production.
+DRY-RUN prints every request it WOULD send and writes nothing.
 
 Export JSON shape (also produced by build_export_from_kmds()):
 {
@@ -40,7 +44,10 @@ import sys
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
-DEFAULT_BASE = "https://starrydata.nims.go.jp"
+# Default to the STAGING server (NIMS network only) so tests never touch
+# production. Mato-san's official internal API mounts the app at /starrydata2.
+DEFAULT_BASE = "https://starrydata-stg.nims.go.jp"
+DEFAULT_PREFIX = "/starrydata2"
 DEFAULT_PROJECT = "GeneralDB"
 
 
@@ -95,12 +102,16 @@ class StarrydataClient:
     cookies and CSRF token. dry_run=True (default) sends nothing."""
 
     def __init__(self, base: str = DEFAULT_BASE, project: str = DEFAULT_PROJECT,
-                 dry_run: bool = True):
+                 dry_run: bool = True, prefix: str = DEFAULT_PREFIX):
         self.base = base.rstrip("/")
+        self.prefix = "/" + prefix.strip("/")     # app mount, e.g. /starrydata2
         self.project = project
         self.dry_run = dry_run
         self._pw = self._browser = self._ctx = self._page = None
         self.sent = []   # log of committed requests (or would-be, in dry-run)
+
+    def _url(self, path: str) -> str:
+        return self.base + self.prefix + path
 
     # -- session -------------------------------------------------------------
     def login_interactive(self, timeout_s: int = 420):
@@ -114,7 +125,7 @@ class StarrydataClient:
         self._browser = self._pw.chromium.launch(headless=False)
         self._ctx = self._browser.new_context()
         self._page = self._ctx.new_page()
-        self._page.goto(self.base + "/starrydata2/", wait_until="domcontentloaded")
+        self._page.goto(self.base + self.prefix + "/", wait_until="domcontentloaded")
         print("\n" + "=" * 60)
         print("  Log in to Starrydata in the browser window (incl. MFA),")
         print("  then open your database / paper list. I'll detect it and")
@@ -145,7 +156,7 @@ class StarrydataClient:
         return ""
 
     def _post(self, path: str, form: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        url = self.base + path
+        url = self._url(path)
         if self.dry_run:
             print(f"\n[DRY-RUN] POST {url}")
             for k, v in form.items():
@@ -157,7 +168,7 @@ class StarrydataClient:
             url, form=form,
             headers={"X-CSRFToken": self._csrf(),
                      "X-Requested-With": "XMLHttpRequest",
-                     "Referer": self.base + "/starrydata2/"})
+                     "Referer": self.base + self.prefix + "/"})
         ok = resp.ok
         try:
             data = resp.json()
@@ -170,78 +181,85 @@ class StarrydataClient:
             print(f"      ↳ {str(msg)[:200]}")
         return data
 
-    # -- operations ----------------------------------------------------------
-    def resolve_doi(self, doi: str) -> Optional[str]:
-        """DOI -> paper pk via the search endpoint. Returns the pk ONLY on an
-        exact DOI match — never guesses the first row (that mis-targeted an
-        upload during testing). None if the paper isn't in Starrydata yet."""
-        form = {"doi": doi + "\n", "pagelimit": "25", "projectname": self.project,
-                "page": "1", "words": "", "searchselect": "DOI",
-                "sort_field": "sid", "sort_order": "asc"}
+    def _get(self, path: str, params: Dict[str, str]) -> Any:
         if self.dry_run:
-            print(f"\n[DRY-RUN] resolve DOI {doi} via /paperlist/uploadpaper/all")
+            print(f"\n[DRY-RUN] GET {self._url(path)}  {params}")
+            return []
+        resp = self._ctx.request.get(self._url(path), params=params,
+                                     headers={"X-CSRFToken": self._csrf()})
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": resp.status, "text": resp.text()[:300]}
+
+    # -- operations (Mato-san's official internal API) -----------------------
+    def register_paper(self, doi: str, listname: str = "all") -> Optional[str]:
+        """POST /paper/uploadpaper/{listname}/ — upsert a paper by DOI (metadata
+        fetched from CrossRef; linked to the list without duplication) and
+        return its ObjectID (pk). Matches the exact DOI in the returned list;
+        never guesses the first row."""
+        if self.dry_run:
+            print(f"\n[DRY-RUN] register paper {doi} via /paper/uploadpaper/{listname}/")
             return "<paper_pk:dry-run>"
-        data = self._post("/starrydata2/paperlist/uploadpaper/all", form)
-        rows = data if isinstance(data, list) else []
+        data = self._post(f"/paper/uploadpaper/{listname}/",
+                          {"doi": doi.strip(), "projectname": self.project})
+        pk = self._pk_from_rows(data, doi)
+        if pk:
+            return pk
+        # upsert response may be paginated/filtered differently — fall back to
+        # the authoritative paper list.
+        return self.resolve_pk(doi, listname=listname)
+
+    def resolve_pk(self, doi: str, listname: str = "all") -> Optional[str]:
+        """GET /paper/getpaperlist/{listname}/ and match the exact DOI -> pk."""
         want = doi.strip().lower()
-        for r in rows:
-            if str(r.get("fields", {}).get("DOI", "")).strip().lower() == want:
-                return r.get("pk")
-        print(f"  ✗ no EXACT DOI match among {len(rows)} search result(s) for {doi}")
+        for page in range(1, 40):
+            rows = self._get(f"/paper/getpaperlist/{listname}/",
+                             {"projectname": self.project, "pagelimit": "50", "page": str(page)})
+            if not isinstance(rows, list) or not rows:
+                break
+            pk = self._pk_from_rows(rows, doi)
+            if pk:
+                return pk
+        print(f"  ✗ no exact DOI match for {doi} in list '{listname}'")
         return None
 
-    def add_paper(self, doi: str, listname: str = "AutoLineDigitizer") -> Optional[str]:
-        """Register a paper (by DOI) into Starrydata via the same endpoints the
-        UI's "New Paper" uses: create a working list, then upload-to-list, which
-        pulls the paper's metadata and returns it with its new SID + pk. Returns
-        the pk, or None if it couldn't be added (e.g. DOI not resolvable)."""
-        if self.dry_run:
-            print(f"\n[DRY-RUN] add paper {doi} to list '{listname}' via "
-                  f"createlist + uploadpaper/{listname}")
-            return "<paper_pk:dry-run>"
-        self._post("/starrydata2/paperlist/createlist/",
-                   {"listname": listname, "projectname": self.project})
-        form = {"doi": doi + "\n", "pagelimit": "25", "projectname": self.project,
-                "page": "1", "words": "", "searchselect": "DOI",
-                "sort_field": "sid", "sort_order": "asc"}
-        data = self._post(f"/starrydata2/paperlist/uploadpaper/{listname}", form)
-        rows = data if isinstance(data, list) else []
+    @staticmethod
+    def _pk_from_rows(data: Any, doi: str) -> Optional[str]:
         want = doi.strip().lower()
-        for r in rows:
-            if str(r.get("fields", {}).get("DOI", "")).strip().lower() == want:
-                f = r.get("fields", {})
-                print(f"  ✓ paper registered: SID-{f.get('sid')} "
-                      f"“{str(f.get('title',''))[:60]}”")
+        for r in (data if isinstance(data, list) else []):
+            f = r.get("fields", {})
+            if str(f.get("DOI", "")).strip().lower() == want:
+                if f.get("sid"):
+                    print(f"  ✓ paper SID-{f.get('sid')} "
+                          f"“{str(f.get('title', ''))[:55]}”")
                 return r.get("pk")
-        print(f"  ✗ could not add paper for DOI {doi} "
-              f"({len(rows)} row(s) returned, no exact match)")
         return None
 
     def upload_figure(self, pk: str, fig: Dict[str, Any]) -> List[Dict[str, Any]]:
         out = []
         for curve in fig.get("curves") or []:
             form = build_postdata_form(fig, curve)
-            out.append(self._post(f"/starrydata2/paperlist/postdata/{pk}/{self.project}", form))
+            out.append(self._post(f"/paper/postdata/{pk}/{self.project}/", form))
         return out
 
     def upload_export(self, export: Dict[str, Any],
                       pk_override: Optional[str] = None,
-                      add_if_missing: bool = False,
-                      listname: str = "AutoLineDigitizer") -> Dict[str, Any]:
+                      add_if_missing: bool = True,
+                      listname: str = "all") -> Dict[str, Any]:
         doi = export["doi"]
         self.project = export.get("project", self.project)
         if pk_override:
             pk = pk_override
-            print(f"\n▶ Using explicit paper pk {pk} (skipping DOI resolve)")
+            print(f"\n▶ Using explicit paper pk {pk}")
+        elif add_if_missing:
+            print(f"\n▶ Registering / resolving paper for DOI {doi} …")
+            pk = self.register_paper(doi, listname=listname)
         else:
             print(f"\n▶ Resolving paper for DOI {doi} …")
-            pk = self.resolve_doi(doi)
-            if not pk and add_if_missing:
-                print(f"  paper not in Starrydata — registering it (New Paper)…")
-                pk = self.add_paper(doi, listname=listname)
+            pk = self.resolve_pk(doi, listname=listname)
         if not pk:
-            print(f"  ✗ paper not found for DOI {doi}. "
-                  f"{'Registration failed.' if add_if_missing else 'Re-run with --add to register it.'}")
+            print(f"  ✗ could not register/resolve paper for DOI {doi}.")
             return {"ok": False, "error": "paper not found"}
         print(f"  paper pk = {pk}")
         n_curves = 0
@@ -437,23 +455,22 @@ def main():
         return
     export_path = args[0]
     commit = "--commit" in args
-    base = DEFAULT_BASE
-    if "--base" in args:
-        base = args[args.index("--base") + 1]
+    base = args[args.index("--base") + 1] if "--base" in args else DEFAULT_BASE
+    prefix = args[args.index("--prefix") + 1] if "--prefix" in args else DEFAULT_PREFIX
     pk_override = args[args.index("--pk") + 1] if "--pk" in args else None
-    add_if_missing = "--add" in args
-    listname = args[args.index("--list") + 1] if "--list" in args else "AutoLineDigitizer"
+    no_add = "--no-add" in args     # skip registration; paper must already exist
+    listname = args[args.index("--list") + 1] if "--list" in args else "all"
     export = json.load(open(export_path, encoding="utf-8"))
 
-    client = StarrydataClient(base=base, dry_run=not commit)
-    print(f"\n{'🚀 COMMIT' if commit else '🧪 DRY-RUN'} mode | base={base}", flush=True)
+    client = StarrydataClient(base=base, dry_run=not commit, prefix=prefix)
+    print(f"\n{'🚀 COMMIT' if commit else '🧪 DRY-RUN'} mode | {base}{client.prefix}", flush=True)
     if commit:
         if not client.login_interactive():
             client.close()
             return
     try:
         result = client.upload_export(export, pk_override=pk_override,
-                                      add_if_missing=add_if_missing, listname=listname)
+                                      add_if_missing=not no_add, listname=listname)
         print(f"\n{'=' * 50}\nResult: {json.dumps(result, ensure_ascii=False)}")
         if not commit:
             print("Dry-run only — nothing was written. Re-run with --commit to upload.")
