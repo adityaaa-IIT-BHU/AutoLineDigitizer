@@ -190,6 +190,33 @@ class StarrydataClient:
         print(f"  ✗ no EXACT DOI match among {len(rows)} search result(s) for {doi}")
         return None
 
+    def add_paper(self, doi: str, listname: str = "AutoLineDigitizer") -> Optional[str]:
+        """Register a paper (by DOI) into Starrydata via the same endpoints the
+        UI's "New Paper" uses: create a working list, then upload-to-list, which
+        pulls the paper's metadata and returns it with its new SID + pk. Returns
+        the pk, or None if it couldn't be added (e.g. DOI not resolvable)."""
+        if self.dry_run:
+            print(f"\n[DRY-RUN] add paper {doi} to list '{listname}' via "
+                  f"createlist + uploadpaper/{listname}")
+            return "<paper_pk:dry-run>"
+        self._post("/starrydata2/paperlist/createlist/",
+                   {"listname": listname, "projectname": self.project})
+        form = {"doi": doi + "\n", "pagelimit": "25", "projectname": self.project,
+                "page": "1", "words": "", "searchselect": "DOI",
+                "sort_field": "sid", "sort_order": "asc"}
+        data = self._post(f"/starrydata2/paperlist/uploadpaper/{listname}", form)
+        rows = data if isinstance(data, list) else []
+        want = doi.strip().lower()
+        for r in rows:
+            if str(r.get("fields", {}).get("DOI", "")).strip().lower() == want:
+                f = r.get("fields", {})
+                print(f"  ✓ paper registered: SID-{f.get('sid')} "
+                      f"“{str(f.get('title',''))[:60]}”")
+                return r.get("pk")
+        print(f"  ✗ could not add paper for DOI {doi} "
+              f"({len(rows)} row(s) returned, no exact match)")
+        return None
+
     def upload_figure(self, pk: str, fig: Dict[str, Any]) -> List[Dict[str, Any]]:
         out = []
         for curve in fig.get("curves") or []:
@@ -198,7 +225,9 @@ class StarrydataClient:
         return out
 
     def upload_export(self, export: Dict[str, Any],
-                      pk_override: Optional[str] = None) -> Dict[str, Any]:
+                      pk_override: Optional[str] = None,
+                      add_if_missing: bool = False,
+                      listname: str = "AutoLineDigitizer") -> Dict[str, Any]:
         doi = export["doi"]
         self.project = export.get("project", self.project)
         if pk_override:
@@ -207,8 +236,12 @@ class StarrydataClient:
         else:
             print(f"\n▶ Resolving paper for DOI {doi} …")
             pk = self.resolve_doi(doi)
+            if not pk and add_if_missing:
+                print(f"  paper not in Starrydata — registering it (New Paper)…")
+                pk = self.add_paper(doi, listname=listname)
         if not pk:
-            print(f"  ✗ paper not found for DOI {doi}. Add it to Starrydata first.")
+            print(f"  ✗ paper not found for DOI {doi}. "
+                  f"{'Registration failed.' if add_if_missing else 'Re-run with --add to register it.'}")
             return {"ok": False, "error": "paper not found"}
         print(f"  paper pk = {pk}")
         n_curves = 0
@@ -408,6 +441,8 @@ def main():
     if "--base" in args:
         base = args[args.index("--base") + 1]
     pk_override = args[args.index("--pk") + 1] if "--pk" in args else None
+    add_if_missing = "--add" in args
+    listname = args[args.index("--list") + 1] if "--list" in args else "AutoLineDigitizer"
     export = json.load(open(export_path, encoding="utf-8"))
 
     client = StarrydataClient(base=base, dry_run=not commit)
@@ -417,7 +452,8 @@ def main():
             client.close()
             return
     try:
-        result = client.upload_export(export, pk_override=pk_override)
+        result = client.upload_export(export, pk_override=pk_override,
+                                      add_if_missing=add_if_missing, listname=listname)
         print(f"\n{'=' * 50}\nResult: {json.dumps(result, ensure_ascii=False)}")
         if not commit:
             print("Dry-run only — nothing was written. Re-run with --commit to upload.")
