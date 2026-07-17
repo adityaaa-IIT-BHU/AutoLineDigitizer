@@ -134,6 +134,49 @@ class VLMVerifier:
         raw_text = "".join(b.text for b in message.content if b.type == "text")
         return self._parse_response(raw_text)
 
+    def read_axis_properties(self, img, model=None):
+        """
+        Identify the physical PROPERTY on each axis (name + unit + scale) from
+        the chart image — for the curator to verify/fix wrong axis terms.
+
+        Returns {"x_axis": {"name", "unit", "is_log"},
+                 "y_axis": {"name", "unit", "is_log"}, "notes": "..."}.
+        Raises on API/parse failure (caller handles).
+        """
+        b64 = self._encode_png(img)
+        prompt = (
+            "Identify the physical quantity plotted on each axis of this chart.\n"
+            "Read the axis TITLES (fall back to tick labels / context if a title "
+            "is missing) and report, per axis:\n"
+            "- name: the property name ONLY, without the unit — e.g. 'Seebeck "
+            "coefficient', 'Temperature difference', 'Weight percentage', 'ZT'\n"
+            "- unit: the unit ONLY — e.g. 'K', 'μV K^-1', 'W m^-1 K^-1', '%'; "
+            "empty string if dimensionless or not printed\n"
+            "- is_log: true if the axis is log-scaled (judge from tick spacing "
+            "and values)\n\n"
+            "Output ONLY this JSON object:\n"
+            '{"x_axis": {"name": "...", "unit": "...", "is_log": false},\n'
+            ' "y_axis": {"name": "...", "unit": "...", "is_log": false},\n'
+            ' "notes": "<short note if anything was ambiguous, else empty>"}'
+        )
+        message = self.client.messages.create(
+            model=model or self.model,
+            max_tokens=800,
+            system=("You read chart axes precisely. You output ONLY a single "
+                    "JSON object — no markdown fences, no prose."),
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image",
+                     "source": {"type": "base64", "media_type": "image/png",
+                                "data": b64}},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+        raw_text = "".join(b.text for b in message.content if b.type == "text")
+        return self._parse_response(raw_text)
+
     def label_lines_by_legend(self, img, data_series, colors=None, model=None):
         """
         Read the chart's legend and assign each detected line its series label.

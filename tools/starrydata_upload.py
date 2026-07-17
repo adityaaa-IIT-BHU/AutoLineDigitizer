@@ -21,12 +21,18 @@ Usage:
   external/pw-venv/bin/python tools/starrydata_upload.py export.json --commit --base https://starrydata.nims.go.jp  # production
   external/pw-venv/bin/python tools/starrydata_upload.py export.json --commit --fresh   # ignore cached login, log in again
 
-You log in ONCE: the first --commit opens a browser to log in (incl. MFA), then
-caches the authenticated session to ~/.starrydata_session.json (0600). Later
-uploads reuse that session silently — no browser, no re-login — until it
-expires, then it prompts once more. --session <file> picks a different cache;
---fresh forces a new login. (Fully unattended, zero-login automation would need
-a service account / API token without MFA — a request for Mato-san.)
+TOKEN AUTH (preferred — fully unattended, Mato-san's token functionality):
+  Save your api-token to ~/.sd2_token (chmod 600), or export SD2_TOKEN, or pass
+  --token <key>. When a token is found, uploads use `Authorization: Token <key>`
+  — no browser, no MFA, no session cache. Tokens are accepted only from the
+  NIMS network; the client falls back to the NIMS proxy
+  (proxyout.nims.go.jp:8888, override with SD2_PROXY) automatically.
+
+SESSION AUTH (fallback when no token is available):
+  You log in ONCE: the first --commit opens a browser to log in (incl. MFA),
+  then caches the authenticated session to ~/.starrydata_session.json (0600).
+  Later uploads reuse that session silently until it expires. --session <file>
+  picks a different cache; --fresh forces a new login.
 
 DRY-RUN prints every request it WOULD send and writes nothing.
 
@@ -60,6 +66,27 @@ DEFAULT_PREFIX = "/starrydata2"
 DEFAULT_PROJECT = "GeneralDB"
 # Where the authenticated browser session is cached so you only log in once.
 DEFAULT_SESSION_FILE = os.path.expanduser("~/.starrydata_session.json")
+# Token auth (Mato-san, staging 2026-07): the key is looked up in --token, then
+# $SD2_TOKEN, then this file. Accepted only from the NIMS network.
+DEFAULT_TOKEN_FILE = os.path.expanduser("~/.sd2_token")
+# NIMS proxy candidates: hostname only resolves on NIMS DNS, so keep the IP as
+# a fallback for when the Mac's primary resolver is a non-NIMS network.
+NIMS_PROXIES = ([os.environ["SD2_PROXY"]] if os.environ.get("SD2_PROXY") else []) + [
+    "http://proxyout.nims.go.jp:8888",
+    "http://172.24.4.66:8888",
+]
+
+
+def load_token(explicit: Optional[str] = None) -> Optional[str]:
+    if explicit and explicit.strip():
+        return explicit.strip()
+    if os.environ.get("SD2_TOKEN", "").strip():
+        return os.environ["SD2_TOKEN"].strip()
+    if os.path.exists(DEFAULT_TOKEN_FILE):
+        with open(DEFAULT_TOKEN_FILE, encoding="utf-8") as f:
+            tok = f.read().strip()
+        return tok or None
+    return None
 
 
 def _xydata(points: List[List[float]]) -> str:
@@ -354,6 +381,109 @@ class StarrydataClient:
                 pass
 
 
+class TokenClient(StarrydataClient):
+    """Same official endpoints, authenticated with `Authorization: Token <key>`
+    (Mato-san's token functionality, staging 2026-07). No browser, no MFA, no
+    CSRF, no session cache — built for unattended/batch use. Tokens are only
+    accepted from the NIMS network, so when the direct route is refused the
+    client retries once through the NIMS proxy."""
+
+    def __init__(self, token: str, base: str = DEFAULT_BASE,
+                 project: str = DEFAULT_PROJECT, dry_run: bool = True,
+                 prefix: str = DEFAULT_PREFIX):
+        import requests
+        self.base = base.rstrip("/")
+        self.prefix = prefix if (prefix or "").startswith("/") or not prefix else "/" + prefix
+        self.project = project
+        self.dry_run = dry_run
+        self.sent: List[Dict[str, Any]] = []
+        self.s = requests.Session()
+        self.s.headers.update({"Authorization": f"Token {token}",
+                               "X-Requested-With": "XMLHttpRequest"})
+        self._via_proxy = False
+
+    # -- session interface kept for drop-in use ------------------------------
+    def login(self, timeout_s: int = 0, force: bool = False) -> bool:
+        """No login with token auth — just probe that the token + network work."""
+        import requests
+        try:
+            rows = self._get("/paper/getpaperlist/all/",
+                             {"projectname": self.project, "pagelimit": "1", "page": "1"})
+        except requests.exceptions.RequestException as ex:
+            print(f"  ✗ cannot reach {self.base} (directly or via the NIMS proxy).\n"
+                  f"    Are you on the NIMS network / is the LAN cable plugged in?\n"
+                  f"    ({type(ex).__name__})")
+            return False
+        ok = isinstance(rows, list)
+        if ok:
+            print(f"  ✓ token auth OK ({self.base}{self.prefix}"
+                  f"{f' via {self._via_proxy}' if self._via_proxy else ''})")
+        else:
+            print(f"  ✗ token auth failed: {str(rows)[:200]}\n"
+                  f"    (token wrong/expired, or not on the NIMS network?)")
+        return ok
+
+    def close(self):
+        self.s.close()
+
+    def _request(self, method: str, url: str, **kw):
+        """Direct first; on a refused/blocked route walk the NIMS proxy
+        candidates (token auth is NIMS-network-only, and the proxy hostname
+        itself only resolves on NIMS DNS — hence the IP fallback)."""
+        import requests
+        if self._via_proxy:
+            kw["proxies"] = {"http": self._via_proxy, "https": self._via_proxy}
+        try:
+            resp = self.s.request(method, url, timeout=60, **kw)
+            if resp.status_code == 403 and not self._via_proxy:
+                raise requests.exceptions.ConnectionError("403 — retry via proxy")
+            return resp
+        except requests.exceptions.RequestException:
+            if self._via_proxy:
+                raise
+            last = None
+            for cand in NIMS_PROXIES:
+                kw["proxies"] = {"http": cand, "https": cand}
+                try:
+                    resp = self.s.request(method, url, timeout=60, **kw)
+                    self._via_proxy = cand
+                    return resp
+                except requests.exceptions.RequestException as ex:  # noqa: PERF203
+                    last = ex
+            raise last
+
+    def _post(self, path: str, form: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        url = self._url(path)
+        if self.dry_run:
+            print(f"\n[DRY-RUN] POST {url}")
+            for k, v in form.items():
+                sv = v if len(str(v)) < 90 else str(v)[:87] + "…"
+                print(f"    {k} = {sv}")
+            self.sent.append({"url": url, "form": form, "dry_run": True})
+            return {"dry_run": True}
+        resp = self._request("POST", url, data=form)
+        try:
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            data = {"status": resp.status_code, "text": resp.text[:300]}
+        self.sent.append({"url": url, "status": resp.status_code, "response": data})
+        print(f"  {'✓' if resp.ok else '✗'} POST {path} -> {resp.status_code}")
+        if not resp.ok:
+            msg = data.get("error") or data.get("text") or data if isinstance(data, dict) else data
+            print(f"      ↳ {str(msg)[:200]}")
+        return data
+
+    def _get(self, path: str, params: Dict[str, str]) -> Any:
+        if self.dry_run:
+            print(f"\n[DRY-RUN] GET {self._url(path)}  {params}")
+            return []
+        resp = self._request("GET", self._url(path), params=params)
+        try:
+            return resp.json()
+        except Exception:  # noqa: BLE001
+            return {"status": resp.status_code, "text": resp.text[:300]}
+
+
 # -- adapter: AutoLineDigitizer fig_digitizations -> export JSON -------------
 
 def build_export_from_digitizations(doi: str, fig_digitizations: Dict[Any, Dict],
@@ -538,11 +668,19 @@ def main():
     session_file = (args[args.index("--session") + 1] if "--session" in args
                     else DEFAULT_SESSION_FILE)
     fresh = "--fresh" in args        # ignore the cached session, log in again
+    token = None if "--no-token" in args else load_token(
+        args[args.index("--token") + 1] if "--token" in args else None)
     export = json.load(open(export_path, encoding="utf-8"))
 
-    client = StarrydataClient(base=base, dry_run=not commit, prefix=prefix,
-                              session_file=session_file)
-    print(f"\n{'🚀 COMMIT' if commit else '🧪 DRY-RUN'} mode | {base}{client.prefix}", flush=True)
+    if token:
+        client = TokenClient(token, base=base, dry_run=not commit, prefix=prefix)
+        auth_note = "token auth"
+    else:
+        client = StarrydataClient(base=base, dry_run=not commit, prefix=prefix,
+                                  session_file=session_file)
+        auth_note = "session auth (no token found — see TOKEN AUTH in --help)"
+    print(f"\n{'🚀 COMMIT' if commit else '🧪 DRY-RUN'} mode | {base}{client.prefix} | {auth_note}",
+          flush=True)
     if commit:
         if not client.login(force=fresh):
             client.close()

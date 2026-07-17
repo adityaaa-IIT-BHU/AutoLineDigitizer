@@ -70,6 +70,12 @@ try:
 except Exception as _vlm_err:
     VLM_VERIFIER_AVAILABLE = False
     ANTHROPIC_AVAILABLE = False
+
+try:
+    import kmds_vocab
+    KMDS_VOCAB_AVAILABLE = kmds_vocab.available()
+except Exception:  # noqa: BLE001
+    KMDS_VOCAB_AVAILABLE = False
     print(f"VLM verifier not available: {_vlm_err}")
 
 try:
@@ -285,6 +291,7 @@ class LineFormerApp:
         # a figure uploads only once BOTH are checked by the person.
         self.fig_reviews = {}
         self._vlm_labeled = set()   # figure idxs already legend-labeled by Claude
+        self._vlm_axes_read = set()  # figure idxs whose axes Claude already read
         self.fig_digitizations = {}
 
     def _vlm_screener_available(self):
@@ -1171,6 +1178,15 @@ def main(page: ft.Page):
     review_status = ft.Text("", size=12, color=INK_3)
     # what was recorded for the current figure — checked before approval
     review_props = ft.Text("", size=12, selectable=True, color=INK_3)
+    sd2_upload_btn = ft.OutlinedButton(
+        "Upload approved → Starrydata2", icon=ft.icons.CLOUD_UPLOAD,
+        tooltip="Upload ONLY the figures you approved to Starrydata2 (staging by "
+                "default) with your api-token (~/.sd2_token). NIMS network only.",
+    )
+    sd2_url_field = ft.TextField(
+        label="Starrydata2 URL", dense=True, width=280,
+        value=app_settings.get_setting("sd2_url", "https://starrydata-stg.nims.go.jp"),
+        hint_text="https://starrydata-stg.nims.go.jp")
     sd3_url_field = ft.TextField(
         label="Starrydata3 URL", dense=True, width=260,
         value=app_settings.get_setting("sd3_url", os.environ.get("ALD_SD3_URL", "")),
@@ -1293,6 +1309,16 @@ def main(page: ft.Page):
                                      hint_text="e.g. Cycle number")
     y_axis_name_field = ft.TextField(label="Y axis name", value="", width=200, dense=True,
                                      hint_text="e.g. Voltage (V)")
+    axis_claude_btn = ft.TextButton(
+        "✦ Ask Claude", tooltip="Have Claude read the figure and fill in the X/Y "
+        "axis property names + units — verify and edit before approving.")
+    # Per-axis verification (like the legend panel, but for axis PROPERTIES):
+    # what the model detected → what KMDS makes of it → editable → savable.
+    kmds_x_text = ft.Text("", size=12, selectable=True)
+    kmds_y_text = ft.Text("", size=12, selectable=True)
+    save_axes_btn = ft.TextButton(
+        "Save axes", tooltip="Stage the verified axis properties for this figure "
+        "(also happens automatically when you switch figures or approve).")
     table_line_picker = ft.Dropdown(
         label="Show", value="all", width=180,
         options=[ft.dropdown.Option("all", "All lines (combined)")],
@@ -1663,17 +1689,114 @@ def main(page: ft.Page):
         page.update()
         reprocess_lines()
 
+    def _update_kmds_pair():
+        """Per-axis live readout under the axis fields: what the model
+        DETECTED, what the (possibly hand-edited) field says now, and what
+        KMDS makes of it. ⚠ marks names the KMDS vocabulary doesn't define
+        (kept verbatim, flagged non-KMDS on upload)."""
+        def line(label, field_val, detected):
+            cur = (field_val or "").strip()
+            if not cur:
+                if detected:
+                    return f"{label}: model detected “{detected}” — edit or ✦ Ask Claude", INK_3
+                return f"{label}: no axis property yet — type it or ✦ Ask Claude", INK_3
+            det = f"  (detected: “{detected}”)" if detected and detected != cur else ""
+            term = kmds_vocab.match(cur) if KMDS_VOCAB_AVAILABLE else None
+            if term:
+                unit = kmds_vocab.unit_of(term)
+                u = f" ({unit})" if unit else ""
+                if kmds_vocab.is_extension(term):
+                    return (f"{label}: {cur}{det}  →  extension: {term}{u}  ✓ "
+                            f"(local term — not yet official KMDS)"), OK
+                return f"{label}: {cur}{det}  →  KMDS: {term}{u}  ✓", OK
+            return (f"{label}: {cur}{det}  →  ⚠ not in the KMDS vocabulary "
+                    f"(kept as-is, flagged on upload)"), WARN
+
+        kmds_x_text.value, kmds_x_text.color = line(
+            "X", x_axis_name_field.value, getattr(app, "x_axis_detected", ""))
+        kmds_y_text.value, kmds_y_text.color = line(
+            "Y", y_axis_name_field.value, getattr(app, "y_axis_detected", ""))
+
+    def on_save_axes(_):
+        app.x_axis_name = (x_axis_name_field.value or "").strip()
+        app.y_axis_name = (y_axis_name_field.value or "").strip()
+        _update_kmds_pair()
+        lbl = _stage_current_figure(silent=True)
+        if lbl:
+            process_status_text.value = (f"✓ Axes saved for “{lbl}” — "
+                                         f"X: {app.x_axis_name or '—'} · "
+                                         f"Y: {app.y_axis_name or '—'}")
+        else:
+            process_status_text.value = "Nothing to save yet — digitize the figure first."
+        page.update()
+
+    save_axes_btn.on_click = on_save_axes
+
     def on_axis_name_change(e):
         app.x_axis_name = (x_axis_name_field.value or "").strip()
         app.y_axis_name = (y_axis_name_field.value or "").strip()
+        _update_kmds_pair()
         update_data_table()
 
     def on_table_pick_change(e):
         update_data_table()
 
+    def on_claude_axis_names(_):
+        """Claude reads the open figure and proposes the X/Y axis PROPERTIES
+        (name + unit). Fills the editable fields — the curator verifies."""
+        if app.current_image is None:
+            process_status_text.value = "Open a figure first."
+            page.update()
+            return
+        if not (VLM_VERIFIER_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY")):
+            process_status_text.value = ("Claude unavailable — set an Anthropic "
+                                         "API key in Settings first.")
+            page.update()
+            return
+        axis_claude_btn.disabled = True
+        process_status_text.value = "✦ Asking Claude to identify the axis properties…"
+        page.update()
+
+        def _work():
+            try:
+                from vlm_verifier import VLMVerifier
+                if app.vlm is None:
+                    app.vlm = VLMVerifier(verify_ssl=True)
+                res = app.vlm.read_axis_properties(app.current_image)
+
+                def fmt(ax):
+                    n = (ax.get("name") or "").strip()
+                    u = (ax.get("unit") or "").strip()
+                    return f"{n} ({u})" if n and u else n
+
+                xa = fmt(res.get("x_axis") or {})
+                ya = fmt(res.get("y_axis") or {})
+                if xa:
+                    x_axis_name_field.value = xa
+                    app.x_axis_name = xa
+                    app.x_axis_detected = xa
+                if ya:
+                    y_axis_name_field.value = ya
+                    app.y_axis_name = ya
+                    app.y_axis_detected = ya
+                note = (res.get("notes") or "").strip()
+                process_status_text.value = (
+                    f"✦ Claude read the axes: X = {xa or '?'} · Y = {ya or '?'}"
+                    + (f"  — {note}" if note else "")
+                    + "  (edit if wrong, then mark Axes OK)")
+                _update_kmds_pair()
+                update_data_table()
+            except Exception as ex:  # noqa: BLE001
+                process_status_text.value = f"Claude axis read failed: {ex}"
+            axis_claude_btn.disabled = False
+            page.update()
+
+        page.run_thread(_work)
+
     x_axis_name_field.on_change = on_axis_name_change
     y_axis_name_field.on_change = on_axis_name_change
     table_line_picker.on_change = on_table_pick_change
+    axis_claude_btn.on_click = on_claude_axis_names
 
     # ---- Canvas gesture handlers ----
     def to_pixel_coords(local_x, local_y):
@@ -1827,14 +1950,57 @@ def main(page: ft.Page):
                     app.axis_config, app.ocr_results = app.detect_axis_calibration(app.current_image)
                     app.result_image = app.draw_points_on_image(app.current_image, app.data_series, app.axis_config)
                     result_image.src_base64 = image_to_base64(cv2.cvtColor(app.result_image, cv2.COLOR_BGR2RGB))
-                    # Auto-fill axis names from OCR
+                    # Auto-fill axis names from OCR; remember what was DETECTED
+                    # so the verification panel can show it next to any edits.
                     x_name, y_name = app.get_axis_titles()
+                    app.x_axis_detected = x_name or ""
+                    app.y_axis_detected = y_name or ""
                     if x_name and not (x_axis_name_field.value or "").strip():
                         x_axis_name_field.value = x_name
                         app.x_axis_name = x_name
                     if y_name and not (y_axis_name_field.value or "").strip():
                         y_axis_name_field.value = y_name
                         app.y_axis_name = y_name
+                    _update_kmds_pair()
+
+                    # Read the axis PROPERTIES with Claude automatically (once
+                    # per figure) — OCR titles are often wrong or missing. Hand
+                    # edits are never clobbered: only fields that are empty or
+                    # still exactly the OCR auto-fill get replaced. The curator
+                    # still verifies via the panel (and can re-run with ✦).
+                    try:
+                        fidx = app.current_figure_idx
+                        can_vlm = (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE
+                                   and bool(os.environ.get("ANTHROPIC_API_KEY")))
+                        if can_vlm and fidx not in app._vlm_axes_read:
+                            if app.vlm is None:
+                                app.vlm = VLMVerifier(verify_ssl=True)
+                            process_status_text.value = "Reading the axes with Claude…"
+                            page.update()
+                            res = app.vlm.read_axis_properties(app.current_image)
+
+                            def _fmt_ax(ax):
+                                n = (ax.get("name") or "").strip()
+                                u = (ax.get("unit") or "").strip()
+                                return f"{n} ({u})" if n and u else n
+
+                            cx = _fmt_ax(res.get("x_axis") or {})
+                            cy = _fmt_ax(res.get("y_axis") or {})
+                            if cx and (x_axis_name_field.value or "").strip() in ("", app.x_axis_detected):
+                                x_axis_name_field.value = cx
+                                app.x_axis_name = cx
+                            if cy and (y_axis_name_field.value or "").strip() in ("", app.y_axis_detected):
+                                y_axis_name_field.value = cy
+                                app.y_axis_name = cy
+                            if cx:
+                                app.x_axis_detected = cx
+                            if cy:
+                                app.y_axis_detected = cy
+                            if fidx is not None:
+                                app._vlm_axes_read.add(fidx)
+                            _update_kmds_pair()
+                    except Exception as ex:  # noqa: BLE001
+                        print(f"[axes-vlm] {ex}")
 
                     # Name each curve by its legend. Claude reads the legend and
                     # matches each curve by its real color/style/position (best);
@@ -1975,6 +2141,10 @@ def main(page: ft.Page):
         y_axis_name_field.value = ""
         app.x_axis_name = ""
         app.y_axis_name = ""
+        app.x_axis_detected = ""
+        app.y_axis_detected = ""
+        kmds_x_text.value = ""
+        kmds_y_text.value = ""
         build_gallery(selected_idx=idx)
         page.update()
         load_image(img_bgr.copy(), image_path=app.pdf_path, figure_idx=idx)
@@ -2762,6 +2932,38 @@ def main(page: ft.Page):
                     + 0.75 * range_score(ys, axes.get("y"))
                     + 0.5 * range_score(xs, axes.get("x")))
 
+        def _split_name_unit(s):
+            m = re.match(r"^(.*?)\s*\(([^()]+)\)\s*$", (s or "").strip())
+            return (m.group(1).strip(), m.group(2).strip()) if m else ((s or "").strip(), "")
+
+        def _apply_verified_axes(graph, dig, key):
+            """The curator marked this figure's Axes OK — their verified axis
+            names correct the graph's quantity terms, which the whole-PDF KMDS
+            extraction sometimes gets wrong. The old term is kept in the graph
+            description for provenance."""
+            if not (app.fig_reviews.get(key) or {}).get("axes_ok"):
+                return
+            axes = {str(a.get("axis") or "").lower(): a
+                    for a in (graph.get("axes") or []) if isinstance(a, dict)}
+            for ax_key, nm in (("x", dig.get("x_name")), ("y", dig.get("y_name"))):
+                name, unit = _split_name_unit(nm)
+                ax = axes.get(ax_key)
+                if not ax or not name or name.upper() in ("X", "Y"):
+                    continue
+                q = ax.setdefault("quantity", {})
+                old = (q.get("term") or "").strip()
+                if old.lower() == name.lower():
+                    if unit and not (ax.get("unit") or "").strip():
+                        ax["unit"] = unit
+                    continue
+                q["term"] = name
+                if unit:
+                    ax["unit"] = unit
+                if old and old.upper() not in ("X", "Y"):
+                    graph["description"] = ((graph.get("description") or "") +
+                        f" [axis {ax_key}: term '{old}' → '{name}' verified by "
+                        f"curator in AutoLineDigitizer]").strip()
+
         for _key, dig in app.fig_digitizations.items():
             summary = (f"Digitized: {dig['n_lines']} lines, {dig['n_points']} pts — "
                        f"X:{dig['x_name']}{' log' if dig['is_log_x'] else ''}, "
@@ -2787,6 +2989,7 @@ def main(page: ft.Page):
                     if best_fig.get("digitization") else summary
                 best["digitization"] = summary
                 best["digitization_data"] = dd
+                _apply_verified_axes(best, dig, _key)
                 continue
 
             # PASS 2 — no calibrated match: fall back to figure-number lookup +
@@ -2831,6 +3034,7 @@ def main(page: ft.Page):
                 target["graphs"].append(best)
             best["digitization"] = summary
             best["digitization_data"] = dd
+            _apply_verified_axes(best, dig, _key)
 
         app.merged_record = record   # stash for Starrydata3 upload (same record)
         tmpl_path = os.path.join(SCRIPT_DIR, "kmds_paper_viewer_claude.html")
@@ -3101,6 +3305,86 @@ def main(page: ft.Page):
     save_fig_btn.on_click = on_save_fig_to_record
     open_record_btn.on_click = on_open_paper_record
     sd3_upload_btn.on_click = on_upload_starrydata3
+
+    def on_upload_starrydata2(_):
+        """Upload ONLY the approved figures to Starrydata2 (Mato-san's internal
+        API, token auth). Same approval gate as the Starrydata3 upload."""
+        import sys as _sys
+        tools_dir = os.path.join(SCRIPT_DIR, "tools")   # SCRIPT_DIR = repo root
+        if tools_dir not in _sys.path:
+            _sys.path.insert(0, tools_dir)
+        try:
+            from starrydata_upload import TokenClient, build_export_from_kmds, load_token
+        except Exception as ex:  # noqa: BLE001
+            process_status_text.value = f"Starrydata2 uploader unavailable: {ex}"
+            page.update()
+            return
+        approved = _approved_keys() & set(app.fig_digitizations.keys())
+        if not approved:
+            process_status_text.value = ("Nothing approved yet — open each figure and "
+                "check Axes OK + Extraction OK, then upload.")
+            page.update()
+            return
+        token = load_token()
+        if not token:
+            process_status_text.value = ("No Starrydata2 api-token found — save the key "
+                "Mato-san DM'd you to ~/.sd2_token (chmod 600), or set $SD2_TOKEN.")
+            page.update()
+            return
+        base = (sd2_url_field.value or "").strip() or "https://starrydata-stg.nims.go.jp"
+        app_settings.set_setting("sd2_url", base)
+        sd2_upload_btn.disabled = True
+        process_status_text.value = f"Uploading {len(approved)} approved figure(s) to Starrydata2…"
+        page.update()
+
+        def _work():
+            all_digs = app.fig_digitizations
+            try:
+                app.fig_digitizations = {k: v for k, v in all_digs.items() if k in approved}
+                _build_paper_record_html()          # -> app.merged_record
+                rec = app.merged_record or {}
+                pub = rec.setdefault("metadata", {}).setdefault("publication", {})
+                if not (pub.get("DOI") or "").strip():
+                    doi = _pdf_doi(app.pdf_path) if app.pdf_path else None
+                    if not doi:
+                        process_status_text.value = ("Approved figures ready, but no DOI — "
+                            "run KMDS first (or ensure the PDF has a DOI), then upload.")
+                        return
+                    pub["DOI"] = doi
+                export = build_export_from_kmds(rec)
+                if not export.get("figures"):
+                    skipped = "; ".join(str(s) for s in (export.get("skipped") or [])[:2])
+                    process_status_text.value = ("Nothing uploadable — every graph was "
+                        f"skipped ({skipped or 'no digitized graphs with real axis names'}). "
+                        "Verify the axis properties (✦ Ask Claude), then re-approve.")
+                    return
+                client = TokenClient(token, base=base, dry_run=False)
+                try:
+                    if not client.login():
+                        process_status_text.value = ("Starrydata2 token auth failed — wrong/"
+                            "expired token, or not on the NIMS network (plug in the LAN).")
+                        return
+                    res = client.upload_export(export)
+                finally:
+                    client.close()
+                if res.get("ok"):
+                    n_skip = len(export.get("skipped") or [])
+                    process_status_text.value = (
+                        f"✓ Uploaded {res.get('n_curves')} curve(s) in {res.get('n_figures')} "
+                        f"figure(s) to Starrydata2 (paper pk {res.get('pk')})"
+                        + (f" — {n_skip} graph(s) skipped (placeholder axes)" if n_skip else ""))
+                else:
+                    process_status_text.value = f"Starrydata2 upload failed: {res.get('error')}"
+            except Exception as ex:  # noqa: BLE001
+                process_status_text.value = f"Starrydata2 upload failed: {type(ex).__name__}: {ex}"
+            finally:
+                app.fig_digitizations = all_digs     # always restore the full set
+                sd2_upload_btn.disabled = False
+                page.update()
+
+        page.run_thread(_work)
+
+    sd2_upload_btn.on_click = on_upload_starrydata2
 
     def save_sd_result(e: ft.FilePickerResultEvent):
         if e.path and app.data_series:
@@ -3670,7 +3954,9 @@ def main(page: ft.Page):
     data_table_section = _card(ft.Column([
         ft.Row([ft.Icon(ft.icons.TABLE_CHART_OUTLINED, size=18, color=ACCENT),
                 data_table_title, ft.Container(expand=True), export_csv_btn]),
-        ft.Row([x_axis_name_field, y_axis_name_field, table_line_picker], spacing=10),
+        ft.Row([x_axis_name_field, y_axis_name_field, axis_claude_btn, save_axes_btn,
+                table_line_picker], spacing=10, wrap=True, run_spacing=6),
+        ft.Column([kmds_x_text, kmds_y_text], spacing=2),
         table_row_count_text,
         data_table_scroll,
     ], spacing=8))
@@ -3690,6 +3976,10 @@ def main(page: ft.Page):
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    wrap=True, run_spacing=8, spacing=8),
             review_props,
+            ft.Row([sd2_upload_btn, sd2_url_field],
+                   alignment=ft.MainAxisAlignment.START,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                   wrap=True, run_spacing=8, spacing=8),
             ft.Row([sd3_upload_btn, sd3_url_field, sd3_key_field],
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -3917,6 +4207,13 @@ def main(page: ft.Page):
         page.update()
 
     page.run_thread(load_models_async)
+
+    # Auto-open a PDF on launch: ALD_OPEN_PDF=/path/to/paper.pdf. Same path as
+    # picking it in the file dialog — a saved *_kmds record next to the PDF is
+    # loaded automatically.
+    _auto_pdf = os.environ.get("ALD_OPEN_PDF", "").strip()
+    if _auto_pdf and os.path.exists(_auto_pdf) and _auto_pdf.lower().endswith(".pdf"):
+        page.run_thread(lambda: run_pdf_extraction(_auto_pdf))
 
 
 if __name__ == "__main__":

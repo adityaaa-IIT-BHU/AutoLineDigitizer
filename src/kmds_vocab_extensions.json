@@ -1,0 +1,21 @@
+{
+  "_comment": "LOCAL vocabulary extensions — property terms the official KMDS schema does not define yet (KMDS v15.2.4 has no electrochemical/battery branch). These are honestly labeled as extensions: they let battery axes map to a controlled term instead of staying free text, but they are NOT official KMDS. Propose them upstream to the KMDS maintainers; when an official release adds them, delete the entries here and reseed Starrydata3 (manage.py seedprops). Keep this file in sync with /Users/Shared/starrydata3/kmds_vocab_extensions.json.",
+  "extensions": [
+    {"name": "voltage",              "category": "electrochemical property (extension)", "unit": "V"},
+    {"name": "capacity",             "category": "electrochemical property (extension)", "unit": "mA h"},
+    {"name": "specific capacity",    "category": "electrochemical property (extension)", "unit": "mA h g^-1"},
+    {"name": "areal capacity",       "category": "electrochemical property (extension)", "unit": "mA h cm^-2"},
+    {"name": "current density",      "category": "electrochemical property (extension)", "unit": "mA cm^-2"},
+    {"name": "C-rate",               "category": "electrochemical property (extension)", "unit": ""},
+    {"name": "coulombic efficiency", "category": "electrochemical property (extension)", "unit": "%"},
+    {"name": "energy density",       "category": "electrochemical property (extension)", "unit": "W h kg^-1"},
+    {"name": "power density",        "category": "electrochemical property (extension)", "unit": "W kg^-1"},
+    {"name": "cycle number",         "category": "electrochemical property (extension)", "unit": ""},
+    {"name": "capacity retention",   "category": "electrochemical property (extension)", "unit": "%"},
+    {"name": "incremental capacity", "category": "electrochemical property (extension)", "unit": "A h V^-1"},
+    {"name": "frequency",            "category": "measurement variable (extension)",     "unit": "Hz"},
+    {"name": "weight percentage",    "category": "thermogravimetric property (extension)", "unit": "%"},
+    {"name": "temperature difference", "category": "thermoelectric module (extension)",  "unit": "K"},
+    {"name": "output power",         "category": "thermoelectric module (extension)",    "unit": "W"}
+  ]
+}
