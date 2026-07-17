@@ -124,9 +124,9 @@ pip install torch==2.12.0
 pip install mmcv-full==1.7.2
 pip install -r requirements-dev.txt
 
-# 2. model weights (downloaded once, stored locally)
-#    - launch the app once: it fetches LineFormer + ChartDete weights automatically
-#    - behind a proxy: download manually (see "Manual Model Download" above)
+# 2. model weights (stored locally, one-time)
+#    - grab iter_3000.pth + checkpoint.pth from the release page and Import
+#      Models in the app — or launch once and let it fetch them automatically
 
 # 3. run the desktop app
 cd src && python desktop_app.py
@@ -139,9 +139,9 @@ Optional pieces:
 - **Claude curation** — put your Anthropic API key in the app's Settings (or
   `ANTHROPIC_API_KEY`); axis reading and legend naming then run automatically
   per figure.
-- **Starrydata3** (local database + web UI + server-side digitize studio) —
-  install [starrydata3](https://github.com/adityaaa-IIT-BHU/starrydata3) and run
-  its server from this env: `ALD_SRC=$PWD/src uvicorn starrydata3.app:app --port 8300`.
+- **Starrydata3** (local KMDS database + web UI) — install
+  [starrydata3](https://github.com/adityaaa-IIT-BHU/starrydata3) (plain venv, no
+  ML deps), then use the app's *Upload approved → Starrydata3* button.
 - **Starrydata2 uploads** — save your api-token to `~/.sd2_token` (chmod 600);
   then use the app's *Upload approved → Starrydata2* button, or batch-upload:
   `python tools/starrydata_upload.py export.json --commit` (NIMS network only;
