@@ -125,6 +125,38 @@ def is_extension(term: str) -> bool:
     return term in _tables()[2]
 
 
+def add_extensions(entries) -> list:
+    """Append new extension terms to kmds_vocab_extensions.json (deduped
+    against the whole vocabulary) and reload. Entries: [{name, category,
+    unit, ...}]. Extra keys (e.g. added_by) are kept for provenance.
+    Returns the names actually added."""
+    norm_map = _tables()[0]
+    fresh = []
+    seen = set()
+    for e in entries or []:
+        name = (e.get("name") or "").strip()
+        if not name or _norm(name) in norm_map or _norm(name) in seen:
+            continue
+        seen.add(_norm(name))
+        fresh.append({"name": name,
+                      "category": (e.get("category") or "property").strip()
+                      + (" (extension)" if "(extension)" not in (e.get("category") or "") else ""),
+                      "unit": (e.get("unit") or "").strip(),
+                      **({"added_by": e["added_by"]} if e.get("added_by") else {})})
+    if not fresh:
+        return []
+    try:
+        with open(EXTENSIONS_PATH, encoding="utf-8") as f:
+            doc = json.load(f)
+    except Exception:  # noqa: BLE001
+        doc = {"extensions": []}
+    doc.setdefault("extensions", []).extend(fresh)
+    with open(EXTENSIONS_PATH, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+    _tables.cache_clear()
+    return [e["name"] for e in fresh]
+
+
 def match(name: str) -> Optional[str]:
     """Axis/OCR property name -> canonical KMDS term, or None if not a KMDS
     property. A trailing '(unit)' is split off and used only to disambiguate

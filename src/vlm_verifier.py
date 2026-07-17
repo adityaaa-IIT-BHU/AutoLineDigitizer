@@ -177,6 +177,48 @@ class VLMVerifier:
         raw_text = "".join(b.text for b in message.content if b.type == "text")
         return self._parse_response(raw_text)
 
+    def canonicalize_properties(self, labels, model=None):
+        """
+        Turn axis labels that are NOT in the KMDS vocabulary into proposed
+        vocabulary entries, so the vocabulary can grow as new properties are
+        encountered. Text-only call (no image).
+
+        Returns a list aligned to `labels`:
+          [{"label": <input>, "is_property": bool, "name": "...",
+            "category": "...", "unit": "..."}, ...]
+        is_property=False marks noise/non-properties (axis junk, sample ids…)
+        that must NOT become vocabulary terms. Raises on API/parse failure.
+        """
+        listing = "\n".join(f"  {i}: {lb!r}" for i, lb in enumerate(labels))
+        prompt = (
+            "These chart-axis labels did not match any term in a materials-science "
+            "property vocabulary (KMDS). For EACH label decide whether it names a "
+            "real measurable physical property.\n\n"
+            f"Labels:\n{listing}\n\n"
+            "For each, report:\n"
+            "- is_property: false for noise, sample identities, figure text, or "
+            "anything that is not a measurable physical quantity\n"
+            "- name: the canonical property term — lowercase except proper nouns, "
+            "singular, unit stripped (e.g. 'incremental capacity', 'Seebeck "
+            "coefficient', 'open-circuit voltage')\n"
+            "- category: a short domain grouping ending in 'property' (e.g. "
+            "'electrochemical property', 'mechanical property', 'optical property')\n"
+            "- unit: the conventional canonical unit ('' if dimensionless), e.g. "
+            "'V', 'mA h g^-1', 'W m^-1 K^-1'\n\n"
+            "Output ONLY a JSON array aligned to the input order:\n"
+            '[{"label": "...", "is_property": true, "name": "...", '
+            '"category": "...", "unit": "..."}, ...]'
+        )
+        message = self.client.messages.create(
+            model=model or self.model,
+            max_tokens=1000,
+            system=("You are a materials-science vocabulary curator. You output "
+                    "ONLY a single JSON array — no markdown fences, no prose."),
+            messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        )
+        raw_text = "".join(b.text for b in message.content if b.type == "text")
+        return self._parse_response(raw_text)
+
     def label_lines_by_legend(self, img, data_series, colors=None, model=None):
         """
         Read the chart's legend and assign each detected line its series label.

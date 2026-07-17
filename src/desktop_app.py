@@ -1717,6 +1717,56 @@ def main(page: ft.Page):
         kmds_y_text.value, kmds_y_text.color = line(
             "Y", y_axis_name_field.value, getattr(app, "y_axis_detected", ""))
 
+    def _grow_vocab_from_axes():
+        """New properties inevitably turn up. Any Claude-read axis property
+        that isn't in the vocabulary is canonicalized by Claude (name,
+        category, unit) and added to kmds_vocab_extensions.json with
+        added_by=claude provenance, then synced to Starrydata3 so the server's
+        ingest flags agree. Non-properties (noise, sample identities) are
+        left alone and stay flagged."""
+        if not (KMDS_VOCAB_AVAILABLE and VLM_VERIFIER_AVAILABLE
+                and os.environ.get("ANTHROPIC_API_KEY")):
+            return
+        import re as _re
+        unmatched = []
+        for nm in _current_axis_names():
+            base = _re.sub(r"\s*\([^()]*\)\s*$", "", nm or "").strip()
+            if base and base.upper() not in ("X", "Y") and kmds_vocab.match(nm) is None:
+                unmatched.append(nm)
+        if not unmatched:
+            return
+        try:
+            if app.vlm is None:
+                app.vlm = VLMVerifier(verify_ssl=True)
+            props = app.vlm.canonicalize_properties(unmatched)
+            entries = [{**p, "added_by": "claude"} for p in props
+                       if isinstance(p, dict) and p.get("is_property") and p.get("name")]
+            added = kmds_vocab.add_extensions(entries)
+        except Exception as ex:  # noqa: BLE001
+            print(f"[vocab-grow] {ex}")
+            return
+        if not added:
+            return
+        # best-effort sync so Starrydata3's ingest knows the new term(s) too
+        url = (sd3_url_field.value or "").strip()
+        key = (sd3_key_field.value or "").strip()
+        if url and key:
+            try:
+                import requests as _rq
+                by_name = {e.get("name"): e for e in entries}
+                for name in added:
+                    e = by_name.get(name) or {}
+                    _rq.post(f"{url.rstrip('/')}/api/v1/properties",
+                             json={"name": name, "category": e.get("category") or "",
+                                   "unit": e.get("unit") or "", "added_by": "claude"},
+                             headers={"X-API-Key": key}, timeout=10)
+            except Exception as ex:  # noqa: BLE001
+                print(f"[vocab-grow] starrydata3 sync failed: {ex}")
+        _update_kmds_pair()
+        process_status_text.value = ("✦ New KMDS extension term(s) added: "
+                                     + ", ".join(added)
+                                     + "  (src/kmds_vocab_extensions.json — edit to undo)")
+
     def on_save_axes(_):
         app.x_axis_name = (x_axis_name_field.value or "").strip()
         app.y_axis_name = (y_axis_name_field.value or "").strip()
@@ -1786,6 +1836,7 @@ def main(page: ft.Page):
                     + "  (edit if wrong, then mark Axes OK)")
                 _update_kmds_pair()
                 update_data_table()
+                _grow_vocab_from_axes()
             except Exception as ex:  # noqa: BLE001
                 process_status_text.value = f"Claude axis read failed: {ex}"
             axis_claude_btn.disabled = False
@@ -1999,6 +2050,7 @@ def main(page: ft.Page):
                             if fidx is not None:
                                 app._vlm_axes_read.add(fidx)
                             _update_kmds_pair()
+                            _grow_vocab_from_axes()
                     except Exception as ex:  # noqa: BLE001
                         print(f"[axes-vlm] {ex}")
 
