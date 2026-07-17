@@ -47,12 +47,19 @@ https://github.com/user-attachments/assets/7ecb641e-f939-40a5-ad7b-54b64937fdd4
 
 ## Download
 
-Download the latest version from the [Releases](https://github.com/adityaaa-IIT-BHU/AutoLineDigitizer/releases) page.
+Get everything from the [latest release](https://github.com/adityaaa-IIT-BHU/AutoLineDigitizer/releases/latest)
+page — the app **and** the ML model weights are all there (from v0.7.0), so after
+downloading nothing else is fetched from the internet.
 
-| Platform | File |
-|----------|------|
-| macOS (Apple Silicon) | `AutoLineDigitizer-macOS.zip` |
-| Windows | `AutoLineDigitizer-Windows.zip` |
+| File | What it is |
+|------|------------|
+| `AutoLineDigitizer-macOS.zip` | The app — macOS (Apple Silicon) |
+| `AutoLineDigitizer-Windows.zip` | The app — Windows |
+| `iter_3000.pth` | LineFormer weights (curve extraction) |
+| `checkpoint.pth` | ChartDete weights (axis detection) |
+
+Download the zip for your platform **plus the two `.pth` files** (they cannot
+ship inside the zip — GitHub caps release files at 2 GiB).
 
 > **Note:** Intel Mac is not currently supported. Apple Silicon (M1/M2/M3/M4) only.
 
@@ -67,13 +74,16 @@ Download the latest version from the [Releases](https://github.com/adityaaa-IIT-
    - Or in Terminal, clear the download quarantine flag: `xattr -dr com.apple.quarantine /Applications/AutoLineDigitizer.app`
 
    (On macOS 15 Sequoia the old right-click → Open trick no longer bypasses the check — use one of the two options above.)
-4. Models will be downloaded automatically on first launch
+4. Click **Import Models** (under the Line Model dropdown) and select the two
+   downloaded `.pth` files — fully offline from here.
+   (If you skipped the `.pth` downloads, the app offers to fetch them
+   automatically on first launch instead — that path needs internet.)
 
 #### Windows
 
 1. Download and unzip `AutoLineDigitizer-Windows.zip`
 2. Run `AutoLineDigitizer\AutoLineDigitizer.exe`
-3. Models will be downloaded automatically on first launch
+3. Click **Import Models** and select the two downloaded `.pth` files
 
 ### Manual Model Download (Proxy / Firewall environments)
 
