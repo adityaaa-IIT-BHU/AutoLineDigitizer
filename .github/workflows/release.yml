@@ -201,6 +201,17 @@ jobs:
           name: AutoLineDigitizer-Windows
           path: artifacts/
 
+      # Ship the ML weights ON the release page so this one page has everything
+      # — nothing else to download afterwards. (A single all-in-one zip would
+      # exceed GitHub's 2 GiB per-asset limit: app ~1.6 G + weights ~2 G.)
+      - name: Fetch model weights (attached to the release)
+        run: |
+          curl -L -o artifacts/iter_3000.pth \
+            https://github.com/t29mato/AutoLineDigitizer/releases/download/models/iter_3000.pth
+          curl -L -o artifacts/checkpoint.pth \
+            https://github.com/t29mato/AutoLineDigitizer/releases/download/models/checkpoint.pth
+          ls -la artifacts/
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -211,26 +222,41 @@ jobs:
           files: |
             artifacts/AutoLineDigitizer-macOS.zip
             artifacts/AutoLineDigitizer-Windows.zip
+            artifacts/iter_3000.pth
+            artifacts/checkpoint.pth
           body: |
             ## AutoLineDigitizer ${{ steps.get_version.outputs.version }}
 
-            ### Download
-            - **macOS** (Apple Silicon): `AutoLineDigitizer-macOS.zip`
-            - **Windows**: `AutoLineDigitizer-Windows.zip`
+            **Everything you need is on this page — after downloading, no internet connection or further downloads are required.**
+
+            ### Download (all from this page)
+            | File | What it is |
+            |---|---|
+            | `AutoLineDigitizer-macOS.zip` | The app — macOS (Apple Silicon) |
+            | `AutoLineDigitizer-Windows.zip` | The app — Windows |
+            | `iter_3000.pth` | LineFormer weights (curve extraction) |
+            | `checkpoint.pth` | ChartDete weights (axis detection) |
+
+            Grab the zip for your platform **plus the two `.pth` files**. (They can't be inside the zip — GitHub caps release files at 2 GiB.)
 
             ### Installation
 
             #### macOS
-            1. Download and unzip `AutoLineDigitizer-macOS.zip`
-            2. Move `AutoLineDigitizer.app` to Applications
-            3. **First launch — macOS will warn it "could not verify the app is free of malware"** (the app is not signed with an Apple Developer ID; it is open source and built by GitHub CI from this repository). To open it anyway, do ONE of:
+            1. Unzip `AutoLineDigitizer-macOS.zip`, move `AutoLineDigitizer.app` to Applications
+            2. **First launch — macOS will warn it "could not verify the app is free of malware"** (the app is not signed with an Apple Developer ID; it is open source and built by GitHub CI from this repository). To open it anyway, do ONE of:
                - Double-click the app (it will be blocked) → **System Settings → Privacy & Security** → scroll to *"AutoLineDigitizer was blocked…"* → **Open Anyway**; or
                - In Terminal: `xattr -dr com.apple.quarantine /Applications/AutoLineDigitizer.app`
-            4. Models will be downloaded automatically on first launch
+            3. In the app, click **Import Models** (under the Line Model dropdown) and select the two downloaded `.pth` files — done, fully offline from here
 
             #### Windows
-            1. Download and unzip `AutoLineDigitizer-Windows.zip`
-            2. Run `AutoLineDigitizer\AutoLineDigitizer.exe` (if SmartScreen warns, click "More info" → "Run anyway")
-            3. Models will be downloaded automatically on first launch
+            1. Unzip `AutoLineDigitizer-Windows.zip`, run `AutoLineDigitizer\AutoLineDigitizer.exe` (if SmartScreen warns, click "More info" → "Run anyway")
+            2. In the app, click **Import Models** and select the two downloaded `.pth` files
+
+            > If you skip the `.pth` downloads, the app offers to fetch them automatically on first launch (needs internet).
+
+            ### Optional
+            - **Claude-assisted curation** (axis reading, legend naming, KMDS verification): add an Anthropic API key in Settings
+            - **Push to Starrydata3** (local KMDS database): https://github.com/adityaaa-IIT-BHU/starrydata3
+            - **Push to Starrydata2** (internal API, token auth): save your api-token to `~/.sd2_token`
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

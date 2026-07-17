@@ -42,6 +42,10 @@ a = Analysis(
         # KMDS prompt + schema (loaded at runtime relative to SCRIPT_DIR/_MEIPASS)
         ('src/extraction_prompt.md', '.'),
         ('src/kmds_v15.2.4_nullable.json', '.'),
+        # KMDS vocabulary extensions (kmds_vocab.py loads it next to the schema)
+        ('src/kmds_vocab_extensions.json', '.'),
+        # Starrydata2 uploader (loaded dynamically from SCRIPT_DIR/tools)
+        ('tools/starrydata_upload.py', 'tools'),
         # Paper-record HTML viewer template
         ('kmds_paper_viewer_claude.html', '.'),
         # EasyOCR models (bundled for offline use)
@@ -60,6 +64,7 @@ a = Analysis(
         'torchvision',
         'cv2',
         'numpy',
+        'requests',   # starrydata_upload.py is loaded dynamically (tools/)
         'easyocr',
         'PIL',
         'skimage',
