@@ -2,7 +2,22 @@
 import os
 import sys
 import certifi
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_all, collect_submodules, collect_data_files
+
+# The MinerU figure detector needs `import transformers` to WORK at runtime —
+# that means the whole stack (metadata, native tokenizers/safetensors libs)
+# must ship, not just the python submodules. collect_all grabs modules + data
+# + dynamic libs + dist metadata; without this the frozen app silently falls
+# back to the worse figure detector.
+_ml_datas, _ml_bins, _ml_hidden = [], [], []
+for _pkg in ("transformers", "tokenizers", "safetensors", "huggingface_hub"):
+    try:
+        _d, _b, _h = collect_all(_pkg)
+        _ml_datas += _d
+        _ml_bins += _b
+        _ml_hidden += _h
+    except Exception:
+        pass
 
 # Get the directory containing this spec file
 spec_dir = os.path.dirname(os.path.abspath(SPEC))
@@ -22,8 +37,10 @@ a = Analysis(
         os.path.join(spec_dir, 'submodules', 'lineformer', 'mmdetection'),
         os.path.join(spec_dir, 'src'),
     ],
-    binaries=[],
-    datas=[
+    binaries=_ml_bins,
+    datas=_ml_datas + [
+        # Starrydata branding (loaded from SCRIPT_DIR/assets at runtime)
+        ('assets', 'assets'),
         # SSL certificates for HTTPS downloads
         (certifi.where(), 'certifi'),
         # Config files
@@ -77,7 +94,7 @@ a = Analysis(
         'jsonschema',
         'app_settings',
     ] + distutils_imports + mmcv_imports + collect_submodules('mineru_layout')
-      + collect_submodules('transformers'),
+      + _ml_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
