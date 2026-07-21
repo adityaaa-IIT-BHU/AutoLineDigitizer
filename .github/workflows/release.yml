@@ -212,6 +212,15 @@ jobs:
             https://github.com/t29mato/AutoLineDigitizer/releases/download/models/checkpoint.pth
           ls -la artifacts/
 
+      # Checksums so anyone can verify a download survived the trip
+      # (truncated browser downloads of the 1.5 GB zip are a real support case)
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum AutoLineDigitizer-macOS.zip AutoLineDigitizer-Windows.zip \
+                    iter_3000.pth checkpoint.pth > checksums.txt
+          cat checksums.txt
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -224,6 +233,7 @@ jobs:
             artifacts/AutoLineDigitizer-Windows.zip
             artifacts/iter_3000.pth
             artifacts/checkpoint.pth
+            artifacts/checksums.txt
           body: |
             ## AutoLineDigitizer ${{ steps.get_version.outputs.version }}
 

@@ -25,6 +25,11 @@ https://github.com/user-attachments/assets/7ecb641e-f939-40a5-ad7b-54b64937fdd4
 ## Features
 
 - **Line Extraction**: Automatic line detection using LineFormer
+- **Point Extraction** (*Detect points (scatter)*): scatter charts get their own
+  detector — markers found directly (filled via distance-transform cores, open
+  via enclosed background holes), per-colour-layer with template amplification;
+  series split by colour AND marker shape; axis ticks and legend swatches
+  excluded; robust to error bars, JPEG artifacts, and tiny low-resolution markers
 - **Axis Detection**: Automatic axis label reading via ChartDete + OCR
 - **PDF mode**: open a whole paper PDF — every chart figure is found and shown in a
   gallery; digitize figure by figure with per-figure review (Axes OK / Extraction OK)
@@ -37,7 +42,10 @@ https://github.com/user-attachments/assets/7ecb641e-f939-40a5-ad7b-54b64937fdd4
 - **KMDS records**: a `<paper>_kmds/` folder next to the PDF is loaded automatically;
   approved digitizations merge into the record (curator-verified axis names correct the
   record's graph terms, with provenance). Vocabulary extensions live in
-  `src/kmds_vocab_extensions.json`.
+  `src/kmds_vocab_extensions.json` and **grow automatically**: a verified axis
+  property KMDS doesn't know is created as an extension term — Claude-canonicalized
+  when available, the curator's wording otherwise, provenance (`added_by`) tracked —
+  and synced to Starrydata3 so app and server always agree.
 - **Uploads**: approved figures go to **Starrydata3** (your local KMDS database,
   [repo](https://github.com/adityaaa-IIT-BHU/starrydata3)) and/or **Starrydata2**
   (official internal API; token auth for unattended use — `tools/starrydata_upload.py`)

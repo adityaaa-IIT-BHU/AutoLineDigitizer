@@ -1718,14 +1718,14 @@ def main(page: ft.Page):
             "Y", y_axis_name_field.value, getattr(app, "y_axis_detected", ""))
 
     def _grow_vocab_from_axes():
-        """New properties inevitably turn up. Any Claude-read axis property
-        that isn't in the vocabulary is canonicalized by Claude (name,
-        category, unit) and added to kmds_vocab_extensions.json with
-        added_by=claude provenance, then synced to Starrydata3 so the server's
-        ingest flags agree. Non-properties (noise, sample identities) are
-        left alone and stay flagged."""
-        if not (KMDS_VOCAB_AVAILABLE and VLM_VERIFIER_AVAILABLE
-                and os.environ.get("ANTHROPIC_API_KEY")):
+        """New properties inevitably turn up. Any committed axis property that
+        isn't in the vocabulary is added to kmds_vocab_extensions.json and
+        synced to Starrydata3 so the server's ingest flags agree. With Claude
+        available the name is canonicalized first (and noise/non-properties
+        rejected, provenance added_by=claude); without Claude the curator's
+        wording is trusted as-is (added_by=curator) — a verified axis name IS
+        a property name."""
+        if not KMDS_VOCAB_AVAILABLE:
             return
         import re as _re
         unmatched = []
@@ -1735,16 +1735,39 @@ def main(page: ft.Page):
                 unmatched.append(nm)
         if not unmatched:
             return
+
+        def _fallback_entries():
+            """No Claude: trust the curator's wording. 'Name (unit)' splits
+            into term + unit; category marks the human origin."""
+            out = []
+            for nm in unmatched:
+                m = _re.match(r"^(.*?)\s*\(([^()]*)\)\s*$", nm.strip())
+                name, unit = ((m.group(1), m.group(2)) if m else (nm, ""))
+                if name.strip():
+                    out.append({"name": name.strip(), "unit": unit.strip(),
+                                "category": "curator-added property",
+                                "added_by": "curator"})
+            return out
+
         try:
-            if app.vlm is None:
-                app.vlm = VLMVerifier(verify_ssl=True)
-            props = app.vlm.canonicalize_properties(unmatched)
-            entries = [{**p, "added_by": "claude"} for p in props
-                       if isinstance(p, dict) and p.get("is_property") and p.get("name")]
+            if VLM_VERIFIER_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY"):
+                if app.vlm is None:
+                    app.vlm = VLMVerifier(verify_ssl=True)
+                props = app.vlm.canonicalize_properties(unmatched)
+                entries = [{**p, "added_by": "claude"} for p in props
+                           if isinstance(p, dict) and p.get("is_property")
+                           and p.get("name")]
+            else:
+                entries = _fallback_entries()
             added = kmds_vocab.add_extensions(entries)
         except Exception as ex:  # noqa: BLE001
-            print(f"[vocab-grow] {ex}")
-            return
+            print(f"[vocab-grow] {ex} — falling back to curator wording")
+            try:
+                entries = _fallback_entries()
+                added = kmds_vocab.add_extensions(entries)
+            except Exception as ex2:  # noqa: BLE001
+                print(f"[vocab-grow] fallback failed: {ex2}")
+                return
         if not added:
             return
         # best-effort sync so Starrydata3's ingest knows the new term(s) too
@@ -1771,6 +1794,12 @@ def main(page: ft.Page):
         app.x_axis_name = (x_axis_name_field.value or "").strip()
         app.y_axis_name = (y_axis_name_field.value or "").strip()
         _update_kmds_pair()
+
+        def _w():
+            # saving axes with a property KMDS doesn't know → create it
+            _grow_vocab_from_axes()
+            page.update()
+        page.run_thread(_w)
         lbl = _stage_current_figure(silent=True)
         if lbl:
             process_status_text.value = (f"✓ Axes saved for “{lbl}” — "
@@ -2112,6 +2141,13 @@ def main(page: ft.Page):
             export_wpd_btn.disabled = False
             verify_btn.disabled = not (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE)
             detect_markers_btn.disabled = not MARKER_DETECTOR_AVAILABLE
+            scatter_btn.disabled = False
+            # scatter-chart hint: few/no traced points usually means markers
+            _n_traced = sum(len(s.get("points") or []) for s in (app.data_series or []))
+            if _n_traced < 12:
+                process_status_text.value = ((process_status_text.value or "")
+                    + "  · Few line points found — if this is a scatter chart, "
+                      "try “Detect points (scatter)”.").strip(" ·")
             axis_fix_btn.disabled = not (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE)
             label_lines_btn.disabled = not (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE)
             try:
@@ -3193,6 +3229,12 @@ def main(page: ft.Page):
         app.fig_reviews.setdefault(key, {})
         app.fig_reviews[key]["axes_ok"] = bool(axes_ok_check.value)
         app.fig_reviews[key]["extraction_ok"] = bool(extraction_ok_check.value)
+        if axes_ok_check.value:
+            # verified axes with a property KMDS doesn't know → create it
+            def _w():
+                _grow_vocab_from_axes()
+                page.update()
+            page.run_thread(_w)
         _sync_review_ui()
         try:
             build_gallery(selected_idx=app.current_figure_idx)   # refresh approval badges
@@ -3669,6 +3711,15 @@ def main(page: ft.Page):
         tooltip="Replace each line's points with actual marker positions, detected via color-thickness peaks along the LineFormer trace. Best for sparse marker charts (e.g. thermoelectric data).",
     )
 
+    scatter_btn = ft.OutlinedButton(
+        "Detect points (scatter)", icon=ft.icons.SCATTER_PLOT, disabled=True,
+        tooltip="Find data points DIRECTLY (no line tracing): filled markers via "
+                "distance transform, hollow markers via enclosed background holes; "
+                "series grouped by color AND marker shape (circle/triangle/square/"
+                "diamond, open/filled). Legend and axis-label regions are excluded "
+                "automatically. Use for scatter charts where LineFormer struggles.",
+    )
+
     axis_fix_btn = ft.OutlinedButton(
         "Fix Axis (AI)", icon=ft.icons.STRAIGHTEN, disabled=True,
         tooltip="Use Claude to read the axis tick labels — including scientific "
@@ -3892,6 +3943,82 @@ def main(page: ft.Page):
 
     detect_markers_btn.on_click = on_detect_markers_click
 
+    def on_detect_scatter_click(_):
+        """Standalone point detection for scatter charts: markers found
+        directly (no line tracing), series split by color AND shape, legend
+        regions excluded, then named from the legend."""
+        if app.current_image is None:
+            return
+        scatter_btn.disabled = True
+        process_status_text.value = "Detecting scatter points…"
+        page.update()
+
+        def _work():
+            try:
+                from marker_extractor import MarkerExtractor
+                dets = getattr(app, "_last_detections", {}) or {}
+                exclude = []
+                for cls in ("legend_area", "legend_patch", "legend_label",
+                            "legend_title", "x_tick", "y_tick", "x_title",
+                            "y_title", "chart_title", "value_label", "mark_label"):
+                    for b in dets.get(cls) or []:
+                        try:
+                            exclude.append([float(v) for v in b[:4]])
+                        except Exception:  # noqa: BLE001
+                            continue
+                ext = MarkerExtractor(app.current_image,
+                                      plot_area=app.cached_plot_area,
+                                      exclude_boxes=exclude)
+                series, meta = ext.extract()
+                if not series:
+                    process_status_text.value = (
+                        "No scatter points found — check the plot area was "
+                        "detected (axis calibration) and the chart really has "
+                        "discrete markers.")
+                    return
+                app.raw_lines = series
+                app.data_series = []
+                for i, (pts, m) in enumerate(zip(series, meta)):
+                    kind = ("open " if m["hollow"] else "") + (m["shape"] or "marker")
+                    app.data_series.append({"points": pts,
+                                            "label": f"Series {i + 1} ({kind})"})
+                app.selected_line_idx = None
+                # name series from the legend by colour (offline matcher)
+                try:
+                    import legend_mapper
+                    names = legend_mapper.map_curves_to_legend(
+                        app.current_image, dets, series,
+                        app.chartdete_module.get_ocr_reader() if app.chartdete_module else None)
+                    for i, nm in enumerate(names or []):
+                        if nm and i < len(app.data_series):
+                            app.data_series[i]["label"] = nm
+                except Exception as ex:  # noqa: BLE001
+                    print(f"[scatter-legend] {ex}")
+                app.result_image = app.draw_points_on_image(
+                    app.current_image, app.data_series, app.axis_config)
+                result_image.src_base64 = image_to_base64(
+                    cv2.cvtColor(app.result_image, cv2.COLOR_BGR2RGB))
+                populate_detected_lines()
+                update_data_table()
+                n_pts = sum(len(s) for s in series)
+                kinds = ", ".join(("open " if m["hollow"] else "") + m["shape"]
+                                  for m in meta)
+                process_status_text.value = (
+                    f"✓ Scatter: {len(series)} series, {n_pts} points ({kinds}) — "
+                    "check the overlay, edit if needed, then approve.")
+            except Exception as ex:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                process_status_text.value = (
+                    f"Scatter detection failed: {type(ex).__name__}: {ex}")
+            finally:
+                scatter_btn.disabled = False
+                page.update()
+
+        page.run_thread(_work)
+
+    scatter_btn.on_click = on_detect_scatter_click
+
     # ---- Claude API key (shared lab key: paste once, stored per-user) ----
     api_key_field = ft.TextField(
         label="Claude API key", password=True, can_reveal_password=True,
@@ -3961,6 +4088,7 @@ def main(page: ft.Page):
             _section_header(ft.icons.AUTO_AWESOME, "AI tools"),
             verify_btn,
             detect_markers_btn,
+            scatter_btn,
             axis_fix_btn,
             label_lines_btn,
             _soft_divider(),
