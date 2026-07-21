@@ -177,6 +177,69 @@ class VLMVerifier:
         raw_text = "".join(b.text for b in message.content if b.type == "text")
         return self._parse_response(raw_text)
 
+    def read_secondary_axes(self, img, plot_area, model=None):
+        """
+        Detect SECONDARY axes — a right-hand y-axis and/or a top x-axis (dual-
+        axis figures) — and read their calibration ticks.
+
+        Returns {"y_right": {"present", "name", "unit", "is_log",
+                             "ticks": [{"value", "frac"}]},
+                 "x_top": {...}, "notes": "..."}
+        frac runs 0→1 bottom→top for y_right and 0→1 left→right for x_top,
+        measured INSIDE the outlined plot box (same convention as
+        verify_axis_calibration). Raises on API/parse failure.
+        """
+        px0, py0, px1, py1 = [float(v) for v in plot_area]
+        annotated = img.copy()
+        cv2.rectangle(annotated, (int(px0), int(py0)), (int(px1), int(py1)),
+                      (255, 0, 255), 2)
+        for f in (0.25, 0.5, 0.75):
+            gx = int(px0 + f * (px1 - px0))
+            gy = int(py1 - f * (py1 - py0))
+            cv2.line(annotated, (gx, int(py0)), (gx, int(py1)), (255, 0, 255), 1)
+            cv2.line(annotated, (int(px0), gy), (int(px1), gy), (255, 0, 255), 1)
+        b64 = self._encode_png(annotated)
+        prompt = (
+            "This chart may have SECONDARY axes besides the usual bottom x-axis "
+            "and left y-axis: a RIGHT-hand y-axis (very common in dual-axis "
+            "materials plots) and/or a TOP x-axis. The magenta rectangle marks "
+            "the plot area; thin magenta guides sit at fractions 0.25/0.50/0.75.\n\n"
+            "For EACH of the two possible secondary axes report:\n"
+            "- present: true only if a DISTINCT scale with its own tick labels "
+            "exists there (a mirrored frame without labels is NOT an axis)\n"
+            "- name: the axis property name, unit stripped\n"
+            "- unit: the unit only ('' if none)\n"
+            "- is_log: whether it is log-scaled\n"
+            "- ticks: EVERY readable tick label as {\"value\": <number>, "
+            "\"frac\": <0..1>} where frac is the position along that axis "
+            "INSIDE the plot box — y_right: 0 at the BOTTOM edge, 1 at the TOP "
+            "edge; x_top: 0 at the LEFT edge, 1 at the RIGHT edge\n\n"
+            "Output ONLY this JSON object:\n"
+            '{"y_right": {"present": false, "name": "", "unit": "", '
+            '"is_log": false, "ticks": []},\n'
+            ' "x_top": {"present": false, "name": "", "unit": "", '
+            '"is_log": false, "ticks": []},\n'
+            ' "notes": ""}'
+        )
+        message = self.client.messages.create(
+            model=model or self.model,
+            max_tokens=1500,
+            system=("You read chart AXES precisely. You handle scientific/"
+                    "exponential notation and log scales. You output ONLY a "
+                    "single JSON object — no markdown fences, no prose."),
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image",
+                     "source": {"type": "base64", "media_type": "image/png",
+                                "data": b64}},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+        raw_text = "".join(b.text for b in message.content if b.type == "text")
+        return self._parse_response(raw_text)
+
     def canonicalize_properties(self, labels, model=None):
         """
         Turn axis labels that are NOT in the KMDS vocabulary into proposed

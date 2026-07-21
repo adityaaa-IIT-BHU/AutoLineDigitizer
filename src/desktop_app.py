@@ -292,6 +292,10 @@ class LineFormerApp:
         self.fig_reviews = {}
         self._vlm_labeled = set()   # figure idxs already legend-labeled by Claude
         self._vlm_axes_read = set()  # figure idxs whose axes Claude already read
+        # secondary axes (dual-axis figures): {"y2": {y1_py, y1_val, y2_py,
+        # y2_val, yIsLogScale, name, unit}, "x2": {x…}}. Series opt in via
+        # data_series[i]["axes"] = {"y": "y2"} / {"x": "x2"}.
+        self.axis_alt = {}
         self.fig_digitizations = {}
 
     def _vlm_screener_available(self):
@@ -702,6 +706,34 @@ class LineFormerApp:
         """Convert pixel (px, py) to axis-calibrated (x, y). Raw pixels if no axis."""
         return self.pixel_to_data_cfg(self.axis_config, px, py)
 
+    def cfg_for_series(self, idx):
+        """Effective axis config for one series: the primary config with the
+        x/y calibration swapped out for any SECONDARY axis (right-hand y, top
+        x) the series is assigned to via data_series[idx]['axes']."""
+        cfg = self.axis_config
+        try:
+            ax = (self.data_series[idx] or {}).get("axes") or {}
+        except (IndexError, TypeError):
+            ax = {}
+        if not cfg or not ax:
+            return cfg
+        cfg = dict(cfg)
+        alt = self.axis_alt.get("y2") if ax.get("y") == "y2" else None
+        if alt:
+            for k in ("y1_py", "y1_val", "y2_py", "y2_val"):
+                cfg[k] = alt[k]
+            cfg["yIsLogScale"] = bool(alt.get("yIsLogScale"))
+        alt = self.axis_alt.get("x2") if ax.get("x") == "x2" else None
+        if alt:
+            for k in ("x1_px", "x1_val", "x2_px", "x2_val"):
+                cfg[k] = alt[k]
+            cfg["xIsLogScale"] = bool(alt.get("xIsLogScale"))
+        return cfg
+
+    def pixel_to_data_series(self, idx, px, py):
+        """pixel -> data honouring the series' assigned axes."""
+        return self.pixel_to_data_cfg(self.cfg_for_series(idx), px, py)
+
     @staticmethod
     def pixel_to_data_cfg(cfg, px, py):
         """pixel -> data for an EXPLICIT axis_config (thread-safe: no app state)."""
@@ -779,10 +811,10 @@ class LineFormerApp:
         if not self.data_series:
             return ""
         lines_data = []
-        for series in self.data_series:
+        for si, series in enumerate(self.data_series):
             pts = []
             for pt in series.get("points", []):
-                xv, yv = self.pixel_to_data(pt[0], pt[1])
+                xv, yv = self.pixel_to_data_series(si, pt[0], pt[1])
                 pts.append((xv, yv))
             lines_data.append(pts)
         max_len = max((len(L) for L in lines_data), default=0)
@@ -1413,10 +1445,10 @@ def main(page: ft.Page):
             new_rows = []
             for r in range(shown):
                 cells = [ft.DataCell(ft.Text(str(r + 1), size=11))]
-                for s in app.data_series:
+                for _si, s in enumerate(app.data_series):
                     if r < len(s["points"]):
                         px, py = s["points"][r]
-                        xv, yv = app.pixel_to_data(px, py)
+                        xv, yv = app.pixel_to_data_series(_si, px, py)
                         cells.append(ft.DataCell(ft.Text(f"{xv:.4g}", size=11)))
                         cells.append(ft.DataCell(ft.Text(f"{yv:.4g}", size=11)))
                     else:
@@ -1445,7 +1477,7 @@ def main(page: ft.Page):
             new_rows = []
             for r in range(shown):
                 px, py = pts[r]
-                xv, yv = app.pixel_to_data(px, py)
+                xv, yv = app.pixel_to_data_series(idx, px, py)
                 new_rows.append(ft.DataRow([
                     ft.DataCell(ft.Text(str(r + 1), size=11)),
                     ft.DataCell(ft.Text(f"{xv:.4g}", size=11)),
@@ -1622,6 +1654,42 @@ def main(page: ft.Page):
             pts = ft.Text(f"{len(series['points'])} pts", size=10, color=INK_3)
             selected = (idx == app.selected_line_idx)
 
+            # dual-axis assignment toggles (shown only when secondary axes exist)
+            axis_toggles = []
+
+            def _mk_toggle(ax_key, _idx=idx):
+                cur = ((app.data_series[_idx].get("axes") or {}).get(ax_key[0])
+                       == ax_key)
+                lbl = ax_key.upper() if cur else ax_key[0].upper() + "1"
+
+                def _cycle(e, _i=_idx, _k=ax_key):
+                    axd = app.data_series[_i].setdefault("axes", {})
+                    if axd.get(_k[0]) == _k:
+                        axd.pop(_k[0], None)
+                    else:
+                        axd[_k[0]] = _k
+                    if not axd:
+                        app.data_series[_i].pop("axes", None)
+                    populate_detected_lines()
+                    update_data_table()
+                    page.update()
+
+                return ft.Container(
+                    content=ft.Text(lbl, size=10,
+                                    weight=ft.FontWeight.W_600,
+                                    color="#ffffff" if cur else INK_3),
+                    bgcolor=ACCENT if cur else PAPER_2,
+                    border=ft.border.all(1, RULE), border_radius=5,
+                    padding=ft.padding.symmetric(2, 6),
+                    tooltip=f"Toggle this curve between the primary and "
+                            f"secondary {ax_key[0].upper()} axis",
+                    on_click=_cycle)
+
+            if "y2" in app.axis_alt:
+                axis_toggles.append(_mk_toggle("y2"))
+            if "x2" in app.axis_alt:
+                axis_toggles.append(_mk_toggle("x2"))
+
             def on_hover(e, _idx=idx):
                 if app.selected_line_idx is None:
                     redraw_with_highlight(_idx if e.data == "true" else None)
@@ -1630,7 +1698,8 @@ def main(page: ft.Page):
                 select_line(_idx)
 
             row = ft.Container(
-                content=ft.Row([swatch, name, ft.Container(expand=True), pts],
+                content=ft.Row([swatch, name, ft.Container(expand=True)]
+                               + axis_toggles + [pts],
                                spacing=8,
                                vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.padding.symmetric(horizontal=8, vertical=6),
@@ -2142,6 +2211,8 @@ def main(page: ft.Page):
             verify_btn.disabled = not (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE)
             detect_markers_btn.disabled = not MARKER_DETECTOR_AVAILABLE
             scatter_btn.disabled = False
+            alt_axes_btn.disabled = False
+            clear_axes_btn.disabled = False
             # scatter-chart hint: few/no traced points usually means markers
             _n_traced = sum(len(s.get("points") or []) for s in (app.data_series or []))
             if _n_traced < 12:
@@ -2894,8 +2965,13 @@ def main(page: ft.Page):
         x_name = (x_axis_name_field.value or "").strip() or "X"
         y_name = (y_axis_name_field.value or "").strip() or "Y"
         series = []
-        for s in app.data_series:
-            series.append([list(app.pixel_to_data(p[0], p[1])) for p in s.get("points", [])])
+        for si, s in enumerate(app.data_series):
+            series.append([list(app.pixel_to_data_series(si, p[0], p[1]))
+                           for p in s.get("points", [])])
+        series_axes = [dict((s.get("axes") or {})) for s in app.data_series]
+        alt_axes = {k: {"name": v.get("name", ""), "unit": v.get("unit", ""),
+                        "is_log": bool(v.get("yIsLogScale") or v.get("xIsLogScale"))}
+                    for k, v in app.axis_alt.items()}
         series_names = [app.line_name(i) for i in range(len(app.data_series))]
         total = sum(len(s["points"]) for s in app.data_series)
         idx = app.current_figure_idx
@@ -2911,6 +2987,7 @@ def main(page: ft.Page):
             "is_log_y": bool(app.axis_config and app.axis_config.get("yIsLogScale")),
             "n_lines": len(app.data_series), "n_points": total, "series": series,
             "series_names": series_names,
+            "series_axes": series_axes, "alt_axes": alt_axes,
         }
         if not kmds_clock.get("running"):
             open_record_btn.disabled = False   # something to view now
@@ -3052,7 +3129,50 @@ def main(page: ft.Page):
                         f" [axis {ax_key}: term '{old}' → '{name}' verified by "
                         f"curator in AutoLineDigitizer]").strip()
 
+        def _split_dig_by_axes(dig):
+            """A dual-axis figure's series split into one dig per axis pair —
+            each becomes its own KMDS graph with the right property names."""
+            saxes = dig.get("series_axes") or []
+            alt = dig.get("alt_axes") or {}
+            if not alt or not any(saxes):
+                return [dig]
+            groups = {}
+            for j in range(len(dig.get("series") or [])):
+                a = saxes[j] if j < len(saxes) else {}
+                groups.setdefault(((a or {}).get("x") or "x1",
+                                   (a or {}).get("y") or "y1"), []).append(j)
+            if len(groups) <= 1:
+                return [dig]
+            out = []
+            for (xk, yk), idxs in groups.items():
+                sub = dict(dig)
+                sub["series"] = [dig["series"][j] for j in idxs]
+                sub["series_names"] = [dig["series_names"][j] for j in idxs]
+                sub["n_lines"] = len(idxs)
+                sub["n_points"] = sum(len(s) for s in sub["series"])
+                sub.pop("series_axes", None)
+                if yk == "y2" and "y2" in alt:
+                    a2 = alt["y2"]
+                    sub["y_name"] = (a2.get("name") or dig["y_name"]) + (
+                        f" ({a2['unit']})" if a2.get("unit") else "")
+                    sub["is_log_y"] = bool(a2.get("is_log"))
+                    sub["label"] = f"{dig['label']} (right axis)"
+                if xk == "x2" and "x2" in alt:
+                    a2 = alt["x2"]
+                    sub["x_name"] = (a2.get("name") or dig["x_name"]) + (
+                        f" ({a2['unit']})" if a2.get("unit") else "")
+                    sub["is_log_x"] = bool(a2.get("is_log"))
+                    if "(right axis)" not in sub.get("label", ""):
+                        sub["label"] = f"{dig['label']} (top axis)"
+                out.append(sub)
+            return out
+
+        _expanded = []
         for _key, dig in app.fig_digitizations.items():
+            for _sub in _split_dig_by_axes(dig):
+                _expanded.append((_key, _sub))
+
+        for _key, dig in _expanded:
             summary = (f"Digitized: {dig['n_lines']} lines, {dig['n_points']} pts — "
                        f"X:{dig['x_name']}{' log' if dig['is_log_x'] else ''}, "
                        f"Y:{dig['y_name']}{' log' if dig['is_log_y'] else ''}")
@@ -3720,6 +3840,20 @@ def main(page: ft.Page):
                 "automatically. Use for scatter charts where LineFormer struggles.",
     )
 
+    alt_axes_btn = ft.OutlinedButton(
+        "Detect all axes (AI)", icon=ft.icons.SWAP_VERT, disabled=True,
+        tooltip="Dual-axis figures: have Claude find and calibrate a RIGHT-hand "
+                "y-axis and/or TOP x-axis. Then assign each curve to its axis "
+                "with the Y1/Y2 (X1/X2) toggle in the lines list. "
+                "Needs ANTHROPIC_API_KEY.",
+    )
+    clear_axes_btn = ft.OutlinedButton(
+        "Delete all axes", icon=ft.icons.LAYERS_CLEAR, disabled=True,
+        tooltip="Remove ALL axis calibrations (primary and secondary) and "
+                "per-curve axis assignments — start calibration over.",
+    )
+    alt_axes_text = ft.Text("", size=12, selectable=True, color=INK_3)
+
     axis_fix_btn = ft.OutlinedButton(
         "Fix Axis (AI)", icon=ft.icons.STRAIGHTEN, disabled=True,
         tooltip="Use Claude to read the axis tick labels — including scientific "
@@ -3778,6 +3912,115 @@ def main(page: ft.Page):
         page.run_thread(run_label)
 
     label_lines_btn.on_click = on_label_lines_click
+
+    def on_detect_all_axes(_):
+        """Claude finds and calibrates secondary axes (right-hand y / top x)
+        for dual-axis figures. Curves are then assigned per-line via the
+        Y1/Y2 (X1/X2) toggles."""
+        if app.current_image is None or not app.cached_plot_area:
+            process_status_text.value = "Calibrate the primary axes first (auto or Fix Axis)."
+            page.update()
+            return
+        if not (VLM_VERIFIER_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY")):
+            process_status_text.value = "Claude unavailable — set an Anthropic API key in Settings."
+            page.update()
+            return
+        alt_axes_btn.disabled = True
+        process_status_text.value = "✦ Looking for secondary axes…"
+        page.update()
+
+        def _work():
+            try:
+                if app.vlm is None:
+                    app.vlm = VLMVerifier(verify_ssl=True)
+                res = app.vlm.read_secondary_axes(app.current_image, app.cached_plot_area)
+                px0, py0, px1, py1 = [float(v) for v in app.cached_plot_area]
+                app.axis_alt = {}
+                notes = []
+
+                def _two_ticks(ax_obj):
+                    ticks = sorted((t for t in (ax_obj.get("ticks") or [])
+                                    if isinstance(t, dict)
+                                    and isinstance(t.get("value"), (int, float))
+                                    and isinstance(t.get("frac"), (int, float))),
+                                   key=lambda t: t["frac"])
+                    return (ticks[0], ticks[-1]) if len(ticks) >= 2 else (None, None)
+
+                yr = res.get("y_right") or {}
+                t0, t1 = _two_ticks(yr)
+                if yr.get("present") and t0 is not None and t0 is not t1:
+                    app.axis_alt["y2"] = {
+                        "y1_py": py1 - float(t0["frac"]) * (py1 - py0),
+                        "y1_val": float(t0["value"]),
+                        "y2_py": py1 - float(t1["frac"]) * (py1 - py0),
+                        "y2_val": float(t1["value"]),
+                        "yIsLogScale": bool(yr.get("is_log")),
+                        "name": (yr.get("name") or "").strip(),
+                        "unit": (yr.get("unit") or "").strip()}
+                    notes.append(f"Y2 (right): {yr.get('name') or '?'}"
+                                 f" ({yr.get('unit') or '-'})"
+                                 f" {t0['value']}→{t1['value']}"
+                                 + (" log" if yr.get("is_log") else ""))
+                xt = res.get("x_top") or {}
+                t0, t1 = _two_ticks(xt)
+                if xt.get("present") and t0 is not None and t0 is not t1:
+                    app.axis_alt["x2"] = {
+                        "x1_px": px0 + float(t0["frac"]) * (px1 - px0),
+                        "x1_val": float(t0["value"]),
+                        "x2_px": px0 + float(t1["frac"]) * (px1 - px0),
+                        "x2_val": float(t1["value"]),
+                        "xIsLogScale": bool(xt.get("is_log")),
+                        "name": (xt.get("name") or "").strip(),
+                        "unit": (xt.get("unit") or "").strip()}
+                    notes.append(f"X2 (top): {xt.get('name') or '?'}"
+                                 f" ({xt.get('unit') or '-'})"
+                                 f" {t0['value']}→{t1['value']}"
+                                 + (" log" if xt.get("is_log") else ""))
+                if notes:
+                    alt_axes_text.value = "  ·  ".join(notes)
+                    process_status_text.value = ("✦ Secondary axes calibrated — assign each "
+                                                 "curve with the Y1/Y2 toggle in the lines list.")
+                else:
+                    alt_axes_text.value = ""
+                    process_status_text.value = "✦ No secondary axes found on this figure."
+                populate_detected_lines()
+                update_data_table()
+            except Exception as ex:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                process_status_text.value = f"Secondary-axis detection failed: {ex}"
+            alt_axes_btn.disabled = False
+            page.update()
+
+        page.run_thread(_work)
+
+    alt_axes_btn.on_click = on_detect_all_axes
+
+    def on_clear_axes(_):
+        """Remove every axis calibration and per-curve assignment."""
+        app.axis_config = None
+        app.axis_alt = {}
+        app.ocr_results = None
+        for s in app.data_series or []:
+            s.pop("axes", None)
+        x_axis_name_field.value = ""
+        y_axis_name_field.value = ""
+        app.x_axis_name = app.y_axis_name = ""
+        app.x_axis_detected = app.y_axis_detected = ""
+        kmds_x_text.value = kmds_y_text.value = ""
+        alt_axes_text.value = ""
+        axis_info_text.value = "Axes cleared — recalibrate (auto-detect, Fix Axis (AI), or manual)."
+        if app.current_image is not None and app.data_series:
+            app.result_image = app.draw_points_on_image(app.current_image,
+                                                        app.data_series, None)
+            result_image.src_base64 = image_to_base64(
+                cv2.cvtColor(app.result_image, cv2.COLOR_BGR2RGB))
+        populate_detected_lines()
+        update_data_table()
+        process_status_text.value = "All axes deleted."
+        page.update()
+
+    clear_axes_btn.on_click = on_clear_axes
 
     def on_axis_fix_click(_):
         if app.current_image is None:
@@ -4090,6 +4333,9 @@ def main(page: ft.Page):
             detect_markers_btn,
             scatter_btn,
             axis_fix_btn,
+            alt_axes_btn,
+            clear_axes_btn,
+            alt_axes_text,
             label_lines_btn,
             _soft_divider(),
             _section_header(ft.icons.LAUNCH, "Adjust in digitizer"),
