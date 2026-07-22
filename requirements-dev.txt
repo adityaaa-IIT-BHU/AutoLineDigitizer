@@ -1,14 +1,21 @@
 # Run-from-source environment for the full AutoLineDigitizer pipeline
 # (PDF gallery + KMDS integration + Claude curation + Starrydata uploads).
-# Python 3.11. Versions are the tested combination — mmdet 2.x needs mmcv-full 1.x,
-# which builds against your local torch; install torch FIRST, then mmcv-full.
+# Python 3.11. Versions are the tested combination.
 #
-#   conda create -n alddev python=3.11 -y && conda activate alddev
-#   pip install torch==2.12.0
-#   pip install mmcv-full==1.7.2        # compiles against torch; takes a while
+# INSTALL ORDER MATTERS — torch first, then mmcv-full (compiles against it):
+#
+#   conda create -n alddev python=3.11 -y --override-channels -c conda-forge
+#   conda activate alddev
+#   pip install torch==2.12.0 torchvision==0.27.0
+#   pip install --no-build-isolation mmcv-full==1.7.2   # slow compile; the
+#       # --no-build-isolation is REQUIRED: setuptools>=81 removed
+#       # pkg_resources, which mmcv's isolated build env expects
 #   pip install -r requirements-dev.txt
 #
+# (conda-forge channel avoids Anaconda's defaults-channel ToS prompt.)
+#
 torch==2.12.0
+torchvision==0.27.0
 mmcv-full==1.7.2
 mmdet==2.28.2
 easyocr==1.7.2
@@ -23,3 +30,8 @@ pillow==12.2.0
 jsonschema==4.26.0
 anthropic==0.105.2
 requests==2.28.2
+# core digitization path (submodules/lineformer/line_utils.py)
+bresenham==0.2.1
+# MinerU PP-DocLayoutV2 figure detector
+transformers==4.57.6
+huggingface_hub==0.36.2
