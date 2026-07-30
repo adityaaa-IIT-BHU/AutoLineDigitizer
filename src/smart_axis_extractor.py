@@ -172,6 +172,13 @@ class ExtractionResult:
     y_labels: List[TickLabel] = field(default_factory=list)
     plot_area: Optional[Tuple[int, int, int, int]] = None
     warnings: List[str] = field(default_factory=list)
+    # SECONDARY axes (dual-axis figures): right-hand y ("y2") and top x
+    # ("x2"). Fits + app-ready calibration dicts; empty when absent.
+    y2_fit: Optional[AxisFit] = None
+    x2_fit: Optional[AxisFit] = None
+    y2_labels: List[TickLabel] = field(default_factory=list)
+    x2_labels: List[TickLabel] = field(default_factory=list)
+    alt_axis_configs: dict = field(default_factory=dict)
 
     @property
     def confidence(self) -> str:
@@ -263,6 +270,30 @@ class SmartAxisExtractor:
             py1 + self.y_band_v_margin_px,
         )
 
+    def _y2_band(self, plot_area):
+        """Mirror of the Y band on the RIGHT edge (secondary y-axis)."""
+        px0, py0, px1, py1 = plot_area
+        plot_w = px1 - px0
+        band_w = max(30, int(plot_w * self.y_band_width_frac))
+        return (
+            px1,
+            py0 - self.y_band_v_margin_px,
+            px1 + band_w,
+            py1 + self.y_band_v_margin_px,
+        )
+
+    def _x2_band(self, plot_area):
+        """Mirror of the X band ABOVE the plot (secondary/top x-axis)."""
+        px0, py0, px1, py1 = plot_area
+        plot_h = py1 - py0
+        band_h = max(20, int(plot_h * self.x_band_height_frac))
+        return (
+            px0 - self.x_band_h_margin_px,
+            py0 - band_h,
+            px1 + self.x_band_h_margin_px,
+            py0,
+        )
+
     @staticmethod
     def _box_center_in(box, region) -> bool:
         """True if box (x,y,w,h) center falls inside region (x0,y0,x1,y1)."""
@@ -347,12 +378,37 @@ class SmartAxisExtractor:
                 value=val, raw_text=text, pixel=float(y + h / 2), box=box,
             ))
 
+        # ---- Secondary bands: right-hand y-axis, top x-axis ----------
+        # (dual-axis figures). Boxes already claimed by a primary band are
+        # excluded so an overhanging corner label can't seed a phantom axis.
+        y2_band = self._y2_band(plot_area)
+        x2_band = self._x2_band(plot_area)
+        y2_ticks: List[TickLabel] = []
+        x2_ticks: List[TickLabel] = []
+        for text, box in (candidate_labels or []):
+            if self._box_center_in(box, x_band) or self._box_center_in(box, y_band):
+                continue
+            val = _try_parse_number(text)
+            if val is None:
+                continue
+            x, y, w, h = box
+            if self._box_center_in(box, y2_band):
+                y2_ticks.append(TickLabel(value=val, raw_text=text,
+                                          pixel=float(y + h / 2), box=box))
+            elif self._box_center_in(box, x2_band):
+                x2_ticks.append(TickLabel(value=val, raw_text=text,
+                                          pixel=float(x + w / 2), box=box))
+
         # Deduplicate (same value at nearly same pixel can be detected twice)
         x_ticks = self._dedupe(x_ticks)
         y_ticks = self._dedupe(y_ticks)
+        y2_ticks = self._dedupe(y2_ticks)
+        x2_ticks = self._dedupe(x2_ticks)
 
         result.x_labels = x_ticks
         result.y_labels = y_ticks
+        result.y2_labels = y2_ticks
+        result.x2_labels = x2_ticks
 
         if len(x_ticks) < self.min_ticks:
             result.warnings.append(
@@ -370,6 +426,28 @@ class SmartAxisExtractor:
             result.x_fit = self._fit_axis(x_ticks)
         if len(y_ticks) >= self.min_ticks:
             result.y_fit = self._fit_axis(y_ticks)
+
+        # ---- Fit secondary axes (stricter: ≥3 ticks — a mirrored frame
+        # with a couple of stray numbers must not become a phantom axis) ----
+        px0, py0, px1, py1 = [float(v) for v in plot_area]
+        if len(y2_ticks) >= max(3, self.min_ticks):
+            fit = self._fit_axis(y2_ticks)
+            if fit and fit.rms_residual_px < 6.0:
+                result.y2_fit = fit
+                result.alt_axis_configs["y2"] = {
+                    "y1_py": py1, "y1_val": _round_pretty(fit.pixel_to_value(py1)),
+                    "y2_py": py0, "y2_val": _round_pretty(fit.pixel_to_value(py0)),
+                    "yIsLogScale": fit.is_log,
+                }
+        if len(x2_ticks) >= max(3, self.min_ticks):
+            fit = self._fit_axis(x2_ticks)
+            if fit and fit.rms_residual_px < 6.0:
+                result.x2_fit = fit
+                result.alt_axis_configs["x2"] = {
+                    "x1_px": px0, "x1_val": _round_pretty(fit.pixel_to_value(px0)),
+                    "x2_px": px1, "x2_val": _round_pretty(fit.pixel_to_value(px1)),
+                    "xIsLogScale": fit.is_log,
+                }
 
         # ---- Build the axis_config dict your app expects --------------
         if result.x_fit and result.y_fit:
