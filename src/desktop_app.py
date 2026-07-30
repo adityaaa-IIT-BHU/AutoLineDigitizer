@@ -122,7 +122,8 @@ except Exception as _scr_err:
 # KMDS structured-metadata extraction (parallel Claude calls on the whole PDF).
 try:
     import kmds_parallel
-    KMDS_AVAILABLE = kmds_parallel.ANTHROPIC_AVAILABLE
+    # Claude API or a configured local model server both enable KMDS
+    KMDS_AVAILABLE = kmds_parallel.kmds_backend_available()
 except Exception as _kmds_err:
     kmds_parallel = None
     KMDS_AVAILABLE = False
@@ -2977,7 +2978,7 @@ def main(page: ft.Page):
                     # GEMINI_API_KEY or GOOGLE_API_KEY instead of the Anthropic key.
                     summary = asyncio.run(kmds_parallel.extract_kmds_parallel(
                         app.pdf_path, out_dir, base_name=base, prompt_path=prompt_path,
-                        model=os.environ.get("KMDS_MODEL") or kmds_parallel.MODEL,
+                        model=os.environ.get("KMDS_MODEL") or kmds_parallel.default_model(),
                         translate=False,
                     ))
                 except Exception as ex:
@@ -3019,7 +3020,14 @@ def main(page: ft.Page):
                 conf = ("" if nv is None else
                         ("   |   Schema: ✓ valid" if nv == 0
                          else f"   |   Schema: {nv} violation(s)"))
-                ja_state = "translating in background…" if n_ok else "skipped"
+                _used_local = kmds_parallel._is_local(
+                    os.environ.get("KMDS_MODEL") or kmds_parallel.default_model())
+                ja_state = ("skipped (local run)" if _used_local
+                            else "translating in background…" if n_ok else "skipped")
+                _c = summary.get("confidence") or {}
+                if _c.get("grounded_ratio") is not None:
+                    conf += (f"   |   grounded: {_c['grounded_ratio']:.0%} "
+                             f"of {_c['checked_fields']} fields")
                 kmds_summary_text.value = (
                     f"Sections OK: {n_ok}/{n_tot}   |   JA: {ja_state}{conf}"
                     f"   |   {elapsed:.0f}s, {out_tok:,} output tokens\n"
@@ -3049,7 +3057,11 @@ def main(page: ft.Page):
 
                 # Background JA translation — the EN record is already on screen,
                 # so this no longer blocks the user (it used to add 3+ minutes).
-                if n_ok and kmds_paths["en"]:
+                if (n_ok and kmds_paths["en"]
+                        and not kmds_parallel._is_local(
+                            os.environ.get("KMDS_MODEL")
+                            or kmds_parallel.default_model())):
+                    # (local extractions skip JA — translation needs the Claude API)
                     ja_target = os.path.join(out_dir, f"{base}_ja.json")
                     _kmds_model = os.environ.get("KMDS_MODEL", "")
                     _tr_model = (_kmds_model if _kmds_model.startswith("gemini")

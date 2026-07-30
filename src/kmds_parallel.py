@@ -579,13 +579,439 @@ async def _gemini_generate(content: List[Dict[str, Any]], model: str,
         raise RuntimeError("Gemini: still rate-limited after 5 retries")
 
 
+# ===================================================================
+# Local backend (KMDS Foundry step 1): the lab model server via Ollama's
+# NATIVE API. Closed-access papers never leave the network — the paper
+# reaches the model as MinerU markdown, never as a PDF.
+# Empirically verified against Ollama 0.20.4: think:false works only on
+# /api/chat; glm ignores grammar-constrained "format" (qwen enforces it),
+# so structure is validated client-side by the existing parse/repair loop.
+# ===================================================================
+
+LOCAL_PREFIX = "local:"
+# context CAP (prompt+output) for local calls; per-call num_ctx is computed
+# from the actual prompt size and only capped here. 49152 = glm's own pin.
+LOCAL_NUM_CTX = int(os.environ.get("ALD_LOCAL_KMDS_NUM_CTX", "49152"))
+_CHARS_PER_TOKEN = 3.2          # conservative for scientific English + JSON
+
+
+def _local_text_model() -> str:
+    """env override → the model configured in Settings → glm default."""
+    m = os.environ.get("ALD_LOCAL_KMDS_TEXT_MODEL")
+    if m:
+        return m
+    try:
+        from llm_backend import _cfg
+        m = _cfg("ALD_LOCAL_LLM_MODEL", "local_llm_model")
+    except Exception:  # noqa: BLE001
+        m = ""
+    return m or "glm-4.7-flash-48k:latest"
+
+
+def _local_vision_model() -> str:
+    return os.environ.get("ALD_LOCAL_KMDS_VISION_MODEL", "qwen2.5vl:32b")
+
+
+def _is_local(model: str) -> bool:
+    return (model or "").startswith(LOCAL_PREFIX)
+
+
+def local_kmds_available() -> bool:
+    """A local model server is configured (llm_backend settings/env)."""
+    try:
+        from llm_backend import local_configured
+        return local_configured()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def kmds_backend_available() -> bool:
+    return ANTHROPIC_AVAILABLE or local_kmds_available()
+
+
+def default_model() -> str:
+    """Honor the user's backend choice: an explicit llm_backend="local"
+    pin wins even when an Anthropic key exists (closed-access workflows
+    depend on this); otherwise Claude when a key is available, else the
+    local server when configured."""
+    try:
+        from llm_backend import resolve_backend
+        pinned_local = resolve_backend() == "local"
+    except Exception:  # noqa: BLE001
+        pinned_local = False
+    if pinned_local and local_kmds_available():
+        return LOCAL_PREFIX + _local_text_model()
+    if ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY"):
+        return MODEL
+    if local_kmds_available():
+        return LOCAL_PREFIX + _local_text_model()
+    return MODEL
+
+
+def _compact_schema(fragment: Optional[Dict[str, Any]]
+                    ) -> Optional[Dict[str, Any]]:
+    """Shrink a section schema for small-context local models: drop the
+    prose keys ('description', 'examples', ...) that carry most of the
+    bytes while keeping structure, field names, types, and enums — the
+    parts that actually constrain the output."""
+    if fragment is None:
+        return None
+    _DROP = {"description", "examples", "$comment", "markdownDescription"}
+
+    def strip(node):
+        if isinstance(node, dict):
+            return {k: strip(v) for k, v in node.items() if k not in _DROP}
+        if isinstance(node, list):
+            return [strip(v) for v in node]
+        return node
+
+    return strip(fragment)
+
+
+def _local_native_url() -> str:
+    from llm_backend import local_url
+    base = local_url()
+    return base[:-3] if base.endswith("/v1") else base
+
+
+def _split_blocks(content: List[Dict[str, Any]]):
+    text_parts: List[str] = []
+    images: List[str] = []
+    for b in content:
+        if b["type"] == "text":
+            text_parts.append(b["text"])
+        elif b["type"] == "image":
+            images.append(b["source"]["data"])
+        elif b["type"] == "document":
+            raise RuntimeError("local model cannot read PDFs — MinerU "
+                               "markdown is required for the local path")
+    return text_parts, images
+
+
+def _est_tokens(content: List[Dict[str, Any]]) -> int:
+    """Rough prompt-token estimate: chars/3.2 + ~1500/image."""
+    chars = sum(len(b.get("text", "")) for b in content if b["type"] == "text")
+    n_img = sum(1 for b in content if b["type"] == "image")
+    return int(chars / _CHARS_PER_TOKEN) + 1500 * n_img
+
+
+async def _local_generate(content: List[Dict[str, Any]], model: str,
+                          max_tokens: int,
+                          num_ctx: Optional[int] = None) -> Dict[str, Any]:
+    """Send Anthropic-block-shaped content to the local model server.
+
+    model arrives WITHOUT the "local:" prefix. Prefers Ollama's NATIVE
+    /api/chat (think:false works there; /v1 needs reasoning_effort). A
+    404/405 means an OpenAI-compatible server (vLLM/LM Studio) — fall
+    back to /v1/chat/completions. Vision support is discovered, not
+    guessed: images are sent, and a 400 blaming them retries without
+    (with a warning) — so any vision model name works.
+    """
+    import httpx
+    text_parts, images = _split_blocks(content)
+    msg: Dict[str, Any] = {"role": "user", "content": "\n\n".join(text_parts)}
+    if images:
+        msg["images"] = images
+    payload: Dict[str, Any] = {
+        "model": model, "messages": [msg], "stream": False, "think": False,
+        "options": {"num_predict": max_tokens, "temperature": 0,
+                    "num_ctx": num_ctx or LOCAL_NUM_CTX},
+    }
+    url = _local_native_url() + "/api/chat"
+    async with httpx.AsyncClient(timeout=3600) as hc:
+        r = await hc.post(url, json=payload)
+        if r.status_code == 400 and "think" in r.text.lower():
+            payload.pop("think", None)      # model has no thinking switch
+            r = await hc.post(url, json=payload)
+        if r.status_code == 400 and images and (
+                "image" in r.text.lower() or "vision" in r.text.lower()
+                or "multimodal" in r.text.lower()):
+            print(f"   ⚠ {model} rejected images — retrying text-only "
+                  f"({len(images)} crops dropped)")
+            payload["messages"][0].pop("images", None)
+            r = await hc.post(url, json=payload)
+        if r.status_code in (404, 405):     # OpenAI-compatible server
+            return await _local_generate_openai(hc, text_parts, images,
+                                               model, max_tokens)
+        r.raise_for_status()
+        d = r.json()
+    return {"text": (d.get("message") or {}).get("content") or "",
+            "stop_reason": d.get("done_reason"),
+            "prompt_eval": d.get("prompt_eval_count", 0),
+            "input_tokens": d.get("prompt_eval_count", 0),
+            "output_tokens": d.get("eval_count", 0),
+            "cache_read_tokens": 0, "cache_creation_tokens": 0}
+
+
+async def _local_generate_openai(hc, text_parts: List[str],
+                                 images: List[str], model: str,
+                                 max_tokens: int) -> Dict[str, Any]:
+    """Fallback for OpenAI-compatible local servers (vLLM, LM Studio)."""
+    from llm_backend import local_url
+    parts: List[Dict[str, Any]] = [
+        {"type": "text", "text": "\n\n".join(text_parts)}]
+    parts += [{"type": "image_url",
+               "image_url": {"url": f"data:image/png;base64,{im}"}}
+              for im in images]
+    r = await hc.post(local_url() + "/chat/completions", json={
+        "model": model, "max_tokens": max_tokens, "temperature": 0,
+        "messages": [{"role": "user", "content": parts}]})
+    r.raise_for_status()
+    d = r.json()
+    m = (d.get("choices") or [{}])[0].get("message") or {}
+    text = m.get("content") or m.get("reasoning") \
+        or m.get("reasoning_content") or ""
+    u = d.get("usage") or {}
+    return {"text": text, "stop_reason": None,
+            "prompt_eval": u.get("prompt_tokens", 0),
+            "input_tokens": u.get("prompt_tokens", 0),
+            "output_tokens": u.get("completion_tokens", 0),
+            "cache_read_tokens": 0, "cache_creation_tokens": 0}
+
+
+def _confidence_report(record: Dict[str, Any], paper_text: str
+                       ) -> Dict[str, Any]:
+    """Groundedness audit: which extracted strings literally occur in the
+    paper's markdown? Purely deterministic — no model call. Fields that
+    don't appear verbatim aren't necessarily wrong (units get normalized,
+    tables reflow), but a LOW ratio flags a hallucinating extraction and
+    tells the curator where to look first."""
+    def _norm(t: str) -> str:
+        # unify the unicode variants PDFs and markdown disagree on
+        t = t.translate(str.maketrans({"\u2212": "-", "\u2013": "-",
+                                       "\u2014": "-", "\u2011": "-",
+                                       "\u2019": "'", "\u2018": "'",
+                                       "\u201c": '"', "\u201d": '"'}))
+        t = t.replace("\ufb01", "fi").replace("\ufb02", "fl").replace("\u00ad", "")
+        return re.sub(r"\s+", " ", t.lower())
+
+    hay = _norm(paper_text)
+    checked: List[tuple] = []
+    # fields that are paraphrase BY DESIGN (summaries, descriptions) can
+    # never match verbatim — auditing them measures paraphrasing, not
+    # hallucination (calibrated: Claude's gold record scores ~18% on them)
+    _PARAPHRASE = ("summary", "description", "structure", "comment",
+                   "conclusion", "overview", "note", "data name")
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, f"{path}.{k}")
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, f"{path}[{i}]")
+        elif isinstance(node, str):
+            s = node.strip()
+            if any(w in path.lower() for w in _PARAPHRASE):
+                return
+            # only prose-like values are checkable: long enough to be
+            # non-accidental, and not ids/enums/units
+            if len(s) >= 12 and sum(c.isalpha() for c in s) >= 8:
+                needle = _norm(s)
+                checked.append((path, s[:80], needle in hay))
+
+    walk(record, "$")
+    unverified = [{"path": p, "value": v} for p, v, ok in checked if not ok]
+    return {"checked_fields": len(checked),
+            "verified_fields": len(checked) - len(unverified),
+            "grounded_ratio": (round(1 - len(unverified) / len(checked), 3)
+                               if checked else None),
+            "unverified": unverified[:80]}
+
+
+_AGENDA_PROMPT = """You are indexing a materials-science paper. From the paper text below, list EVERY distinct entity of two kinds:
+
+1. MATERIALS — substances/compounds/phases studied or used (e.g. 'Fe3Al2Si3 (τ1 phase)', 'ε-FeSi', 'LiFePO4'). Chemical identity, not specimens.
+2. SAMPLES — the physical specimens that were made/measured. Distinct synthesis routes, dopings, or types are DIFFERENT samples (e.g. 'n-type, process (A)' and 'n-type, process (B)' are two). Use the paper's own naming.
+
+Be exhaustive but do not invent: every entry must be traceable to the text. Papers typically have 1-8 materials and 1-10 samples.
+
+Output ONLY this JSON in a ```json code block:
+{"materials": [{"name": "..."}], "samples": [{"name": "...", "description": "<=15 words"}]}
+
+## PAPER
+"""
+
+
+async def _local_agenda(paper_text: str, model: str) -> Optional[Dict[str, Any]]:
+    """Foundry agenda pass: one narrow local call enumerating the paper's
+    samples + materials. Small models miss entities when asked to fill a
+    whole schema, but are near-ceiling on 'list what exists' — the result
+    is injected into the core extraction as an authoritative candidate
+    list. Returns None on any failure (extraction proceeds without it)."""
+    try:
+        g = await _local_generate(
+            [{"type": "text", "text": _AGENDA_PROMPT + paper_text}],
+            model, 1500)
+        agenda = _parse_json_block(g["text"])
+        if not isinstance(agenda, dict):
+            return None
+        mats = [m for m in (agenda.get("materials") or [])
+                if isinstance(m, dict) and (m.get("name") or "").strip()]
+        smps = [s for s in (agenda.get("samples") or [])
+                if isinstance(s, dict) and (s.get("name") or "").strip()]
+        if not (mats or smps):
+            return None
+        return {"materials": mats[:12], "samples": smps[:14],
+                "tokens": g["output_tokens"]}
+    except Exception as e:  # noqa: BLE001
+        print(f"   ⚠ agenda pass failed ({type(e).__name__}: {e}) — "
+              f"continuing without it")
+        return None
+
+
+def _agenda_block(agenda: Dict[str, Any]) -> str:
+    mats = "\n".join(f"  - {m['name']}" for m in agenda["materials"])
+    smps = "\n".join(f"  - {s['name']}"
+                     + (f" — {s['description']}" if s.get("description") else "")
+                     for s in agenda["samples"])
+    return (
+        "## VERIFIED ENTITY LIST (authoritative — from a dedicated index pass)\n"
+        "This paper contains exactly these entities. Your output MUST include "
+        "every one of them (and no invented extras):\n"
+        f"MATERIALS ({len(agenda['materials'])}):\n{mats}\n"
+        f"SAMPLES ({len(agenda['samples'])}):\n{smps}\n\n"
+    )
+
+
+def _finalize_record(record: Dict[str, Any]) -> List[str]:
+    """Deterministic clerical completion — the violation classes a model
+    (especially a local one) fumbles but code fixes perfectly: required
+    KMDS bookkeeping fields, sample ids, and mechanical type coercions.
+    Fills ONLY what is missing; a Claude record passes through untouched."""
+    log: List[str] = []
+    if not isinstance(record, dict):
+        return log
+    meta = record.get("metadata")
+    if not isinstance(meta, dict):
+        return log
+    pub = meta.get("publication")
+    pub = pub if isinstance(pub, dict) else {}
+    title = pub.get("title") if isinstance(pub.get("title"), str) else ""
+
+    def fill(key, value):
+        if not meta.get(key):
+            meta[key] = value
+            log.append(f"metadata.{key} filled")
+
+    fill("data name", (title[:80] or "KMDS record"))
+    fill("data classification", ["EB0103"])
+    fill("data generation date", time.strftime("%Y-%m-%d"))
+    doi = pub.get("DOI") if isinstance(pub.get("DOI"), str) else ""
+    fill("data source", f"extracted from DOI {doi}" if doi
+         else "AutoLineDigitizer extraction")
+    if not isinstance(meta.get("contributor"), dict) or not meta["contributor"]:
+        meta["contributor"] = {"name": "AutoLineDigitizer (local extraction)",
+                               "affiliation": "-", "email address": "-"}
+        log.append("metadata.contributor filled")
+    if not meta.get("keywords"):
+        kws = pub.get("author keywords")
+        if not (isinstance(kws, list) and kws):
+            kws = [w.strip(",:;()").lower() for w in title.split()
+                   if len(w) > 5][:5]
+        if kws:
+            meta["keywords"] = kws
+            log.append("metadata.keywords filled from "
+                       + ("author keywords" if pub.get("author keywords")
+                          else "title"))
+
+    # mechanical shape coercions
+    y = pub.get("year")
+    if isinstance(y, str):
+        m = re.search(r"(19|20)\d{2}", y)
+        if m:
+            pub["year"] = int(m.group(0))
+            log.append("publication.year coerced to integer")
+    j = pub.get("journal")
+    if isinstance(j, str) and j.strip():
+        pub["journal"] = {"name": j.strip()}
+        log.append("publication.journal wrapped into object")
+    authors = pub.get("authors")
+    if isinstance(authors, list):
+        cleaned = [a for a in authors if a and a != {}]
+        if len(cleaned) != len(authors):
+            log.append(f"{len(authors) - len(cleaned)} empty author "
+                       f"stub(s) dropped")
+            authors = pub["authors"] = cleaned
+        for i, a in enumerate(authors):
+            if isinstance(a, str):
+                a = authors[i] = {"given name": " ".join(a.split()[:-1]),
+                                  "family name": (a.split() or [""])[-1]}
+                log.append(f"authors[{i}] split into given/family")
+            elif isinstance(a, dict) and not a.get("family name"):
+                full = a.get("name") or a.get("given name") or ""
+                if isinstance(full, str) and full.strip():
+                    parts = full.split()
+                    a["family name"] = parts[-1]
+                    a["given name"] = " ".join(parts[:-1]) or a.get(
+                        "given name") or ""
+                    a.pop("name", None)
+                    log.append(f"authors[{i}] family name derived")
+    smps = pub.get("samples")
+    if isinstance(smps, list):
+        taken = {s.get("sample local id") for s in smps
+                 if isinstance(s, dict)}
+        n = 0
+        for s in smps:
+            if isinstance(s, dict) and not s.get("sample local id"):
+                n += 1
+                sid = f"s-{n:03d}"
+                while sid in taken:
+                    n += 1
+                    sid = f"s-{n:03d}"
+                s["sample local id"] = sid
+                taken.add(sid)
+                log.append(f"sample id {sid} assigned")
+    return log
+
+
+_DOI_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'<>()\[\]{},;]+)")
+
+
+def _backfill_bibliography(record: Dict[str, Any], paper_text: str) -> List[str]:
+    """Deterministic Stage-1 mining: DOI and title are IN the markdown —
+    never leave them to the model. Fills metadata.publication.DOI (regex)
+    and .title (first markdown heading) only where the extraction left
+    them empty. Returns a log of what was filled."""
+    log: List[str] = []
+    if not isinstance(record, dict):
+        return log
+    meta = record.setdefault("metadata", {})
+    if not isinstance(meta, dict):        # model emitted a scalar — replace
+        meta = record["metadata"] = {}
+    pub = meta.setdefault("publication", {})
+    if not isinstance(pub, dict):
+        pub = meta["publication"] = {}
+
+    def _empty(v) -> bool:
+        return not (isinstance(v, str) and v.strip())
+
+    if _empty(pub.get("DOI")):
+        m = _DOI_RE.search(paper_text)
+        if m:
+            doi = m.group(1).rstrip(".")
+            pub["DOI"] = doi
+            log.append(f"DOI <- {doi} (regex from paper text)")
+    if _empty(pub.get("title")):
+        for line in paper_text.splitlines():
+            t = line.strip()
+            if t.startswith("#"):
+                t = t.lstrip("# ").strip()
+                if len(t) >= 15:
+                    pub["title"] = t
+                    log.append(f"title <- {t[:60]!r} (first markdown heading)")
+                    break
+    return log
+
+
 async def extract_one_section(pdf_b64: str, section_key: str, client,
                               blocks: Dict[str, str],
                               section_schema: Optional[Dict[str, Any]] = None,
                               model: str = MODEL,
                               context_digest: Optional[str] = None,
                               paper_text: Optional[str] = None,
-                              paper_figures: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+                              paper_figures: Optional[List[Dict[str, Any]]] = None,
+                              extra_context: Optional[str] = None) -> Dict[str, Any]:
     """One focused Claude call for a single KMDS section. Never raises.
 
     paper_text: MinerU-extracted markdown of the paper. When given, this call
@@ -611,6 +1037,11 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
         + (("\n\n" + extras) if extras else "")       # section-relevant rule blocks
         + "\n\n" + SUB_PROMPTS[section_key]           # section-specific instruction
     )
+    if _is_local(model):
+        # small-context models: strip schema prose (descriptions/examples)
+        # — structure, names, types, and enums survive
+        section_schema = _compact_schema(section_schema)
+    static_no_schema = static_instruction
     if section_schema is not None:
         schema_json = json.dumps(section_schema, ensure_ascii=False)
         static_instruction += (
@@ -628,6 +1059,8 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
         )
 
     tail = ""
+    if extra_context:
+        tail += extra_context
     if context_digest:
         tail += (
             "## Namespace from Phase 1 (authoritative)\n"
@@ -638,7 +1071,10 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
 
     crops = paper_figures if (section_key == "data_sources" and paper_figures
                               and 0 < len(paper_figures) <= MAX_FIGURE_CROPS) else None
-    use_markdown = paper_text is not None and (section_key != "data_sources" or crops)
+    # local models can never fall back to the raw PDF — markdown always wins
+    # (data_sources then runs from captions alone when crops are unusable)
+    use_markdown = paper_text is not None and (section_key != "data_sources"
+                                               or crops or _is_local(model))
 
     figure_blocks: List[Dict[str, Any]] = []
     if use_markdown:
@@ -685,6 +1121,52 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
         if model.startswith("gemini"):
             g = await _gemini_generate(content, model,
                                        _SECTION_MAX.get(section_key, SECTION_MAX_TOKENS))
+            raw = g.pop("text")
+            g.pop("stop_reason", None)
+            base.update(g)
+        elif _is_local(model):
+            mt = _SECTION_MAX.get(section_key, SECTION_MAX_TOKENS)
+            est = _est_tokens(content)
+            # the abort decision uses the TEXT-ONLY estimate: crops are
+            # dropped automatically when the model rejects them, so images
+            # must never make a text call look impossible
+            est_text = _est_tokens([b for b in content if b["type"] == "text"])
+            if est_text + mt + 512 > LOCAL_NUM_CTX and section_schema is not None:
+                # even compacted, the fragment can outgrow the window —
+                # drop it rather than let the server truncate silently
+                print(f"   ⚠ {section_key}: ~{est//1000}k-token prompt over "
+                      f"the {LOCAL_NUM_CTX//1024}k ctx cap — dropping the "
+                      f"schema fragment (repair pass normalizes afterwards)")
+                content[0] = {**content[0], "text": static_no_schema +
+                    "\n\n(No schema fragment fits this context — use exact "
+                    "KMDS field names; a schema-repair pass runs on your "
+                    "output.)"}
+                est = _est_tokens(content)
+                est_text = _est_tokens([b for b in content if b["type"] == "text"])
+            if est_text + mt + 512 > LOCAL_NUM_CTX:
+                raise RuntimeError(
+                    f"prompt ~{est_text} tokens exceeds the local context cap "
+                    f"{LOCAL_NUM_CTX} — raise ALD_LOCAL_KMDS_NUM_CTX or "
+                    f"shorten the paper")
+            needed = int(est * 1.15) + mt + 512
+            # bucket num_ctx so consecutive calls reuse the loaded model
+            # instead of forcing an Ollama reload on every context change
+            buckets = [16384, 32768, 49152, 65536, 98304, 131072]
+            num_ctx = next((b for b in buckets
+                            if b >= needed and b <= LOCAL_NUM_CTX),
+                           LOCAL_NUM_CTX)
+            g = await _local_generate(content, model[len(LOCAL_PREFIX):],
+                                      mt, num_ctx=num_ctx)
+            pec = g.pop("prompt_eval", 0)
+            # only meaningful on real prompts — small ones differ from the
+            # estimate by tokenizer noise, not truncation
+            if pec and est > 2000 and pec < est * 0.6:
+                # the server evaluated far fewer tokens than we sent —
+                # silent truncation; a "successful" answer would be built
+                # on a partial prompt, so fail the section loudly instead
+                raise RuntimeError(
+                    f"server truncated the prompt (evaluated {pec} of "
+                    f"~{est} tokens) — raise ALD_LOCAL_KMDS_NUM_CTX")
             raw = g.pop("text")
             g.pop("stop_reason", None)
             base.update(g)
@@ -964,9 +1446,14 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
     translate=False skips the JA pass so callers can show the English record
     immediately and run translate_record_file() in the background."""
     is_gemini = model.startswith("gemini")
+    is_local = _is_local(model)
     if is_gemini:
         if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
             return {"_error": "GEMINI_API_KEY / GOOGLE_API_KEY not set"}
+    elif is_local:
+        if not local_kmds_available():
+            return {"_error": "local model server not configured "
+                              "(Settings → Local model server / ALD_LOCAL_LLM_URL)"}
     else:
         if not ANTHROPIC_AVAILABLE:
             return {"_error": "anthropic SDK not installed. pip install anthropic"}
@@ -1024,17 +1511,69 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
     elif use_mineru_text:
         print("⤷ MinerU text unavailable (weights missing or scanned PDF) — raw PDF for all calls")
 
-    # Gemini runs need no Anthropic client (and must not require its API key).
-    client_cm = (AsyncAnthropic() if not is_gemini
+    if is_local and paper_text is None:
+        return {"_error": "local KMDS needs MinerU markdown (scanned PDF or "
+                          "MinerU unavailable) — the local model cannot read PDFs"}
+
+    # Gemini/local runs need no Anthropic client (nor its API key).
+    client_cm = (AsyncAnthropic() if not (is_gemini or is_local)
                  else contextlib.nullcontext())
     async with client_cm as client:
+        # FOUNDRY AGENDA (local only): one narrow entity-index call whose
+        # result is injected into the core prompt as an authoritative list —
+        # small models are near-ceiling on "list what exists" but drop
+        # entities when filling a whole schema in one shot.
+        agenda = None
+        if is_local:
+            print("⤷ Foundry agenda: indexing samples + materials (local)...")
+            agenda = await _local_agenda(paper_text, model[len(LOCAL_PREFIX):])
+            if agenda:
+                print(f"   ✓ agenda: {len(agenda['materials'])} materials, "
+                      f"{len(agenda['samples'])} samples "
+                      f"({agenda['tokens']} tok)")
+        agenda_ctx = _agenda_block(agenda) if agenda else None
+
         # PHASE 1 — one call establishes the record core + id namespaces (samples,
         # materials). The paper block is cached (1h TTL) so phase 2 rides the cache.
         print(f"⤷ KMDS phase 1: core record + id namespaces ({model})...")
         core_res = await extract_one_section(
             pdf_b64, PHASE1_KEY, client, blocks,
             section_schema=section_schemas.get(PHASE1_KEY), model=model,
-            paper_text=paper_text)
+            paper_text=paper_text, extra_context=agenda_ctx)
+
+        # Corrective retry: if the core still dropped agenda entities, tell
+        # it exactly that and take the better of the two attempts.
+        if agenda and core_res["ok"]:
+            def _counts(frag):
+                if not isinstance(frag, dict):
+                    return 0, 0
+                meta = frag.get("metadata")
+                pub = meta.get("publication") if isinstance(meta, dict) else None
+                pub = pub if isinstance(pub, dict) else {}
+                smps = pub.get("samples")
+                mats = frag.get("materials")
+                return (len(smps) if isinstance(smps, list) else 0,
+                        len(mats) if isinstance(mats, list) else 0)
+            s1, m1 = _counts(core_res["fragment"])
+            want_s, want_m = len(agenda["samples"]), len(agenda["materials"])
+            if s1 < want_s or m1 < want_m:
+                print(f"   ↻ core missed entities (samples {s1}/{want_s}, "
+                      f"materials {m1}/{want_m}) — corrective retry")
+                retry = await extract_one_section(
+                    pdf_b64, PHASE1_KEY, client, blocks,
+                    section_schema=section_schemas.get(PHASE1_KEY), model=model,
+                    paper_text=paper_text,
+                    extra_context=(agenda_ctx +
+                        "\nYOUR PREVIOUS ATTEMPT MISSED ENTITIES from the "
+                        "verified list. Include EVERY listed sample in "
+                        "metadata.publication.samples and EVERY listed "
+                        "material in materials[].\n"))
+                if retry["ok"]:
+                    s2, m2 = _counts(retry["fragment"])
+                    if s2 + m2 > s1 + m1:
+                        for fld in ("input_tokens", "output_tokens"):
+                            retry[fld] += core_res[fld]
+                        core_res = retry
         results = [core_res]
         mark = "✓" if core_res["ok"] else "✗"
         extra = "" if core_res["ok"] else f" — {core_res['error']}"
@@ -1049,10 +1588,22 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         # materials_* run on the light model (see SECTION_MODELS); a caller-chosen
         # non-default model overrides the map for every section.
         phase2_keys = [k for k in SUB_PROMPTS if k != PHASE1_KEY]
-        sec_model = {k: (SECTION_MODELS.get(k, model) if model == MODEL else model)
-                     for k in phase2_keys}
+        if is_local:
+            # data_sources needs eyes: route it to the local VISION model when
+            # crops will actually attach (same gate as extract_one_section —
+            # >MAX_FIGURE_CROPS means no crops, so vision buys nothing)
+            usable_crops = bool(paper_figures
+                                and 0 < len(paper_figures) <= MAX_FIGURE_CROPS)
+            sec_model = {k: ((LOCAL_PREFIX + _local_vision_model())
+                             if k == "data_sources" and usable_crops
+                             else model)
+                         for k in phase2_keys}
+        else:
+            sec_model = {k: (SECTION_MODELS.get(k, model) if model == MODEL else model)
+                         for k in phase2_keys}
         n_light = sum(1 for m in sec_model.values() if m != model)
         mode_note = ("sequential — free-tier TPM" if is_gemini
+                     else "sequential — one local GPU" if is_local
                      else f"concurrent{f'; {n_light} on Haiku' if n_light else ''}")
         print(f"⤷ KMDS phase 2: firing {len(phase2_keys)} focused section calls "
               f"({mode_note})...")
@@ -1062,9 +1613,10 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
                                         context_digest=digest, paper_text=paper_text,
                                         paper_figures=paper_figures)
                     for key in phase2_keys)
-        if is_gemini:
-            # 4-wide bursts of ~100k-token requests blow the free-tier
-            # tokens/minute cap immediately — one at a time paces itself.
+        if is_gemini or is_local:
+            # gemini: 4-wide bursts blow the free-tier TPM cap.
+            # local: one GPU — concurrent requests only queue server-side
+            # and interleave badly with model swapping.
             p2 = [await c for c in p2_coros]
         else:
             p2 = list(await asyncio.gather(*p2_coros))
@@ -1101,6 +1653,18 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
             if n_refs:
                 print(f"   ✓ filled {n_refs} axes quantity.ref from schema vocabulary")
 
+        # Deterministic bibliography backfill: DOI/title live verbatim in the
+        # paper — regex beats any model at this, and small local models miss
+        # them more often than Claude does. Runs AFTER repair_record so
+        # {'value': ...}-wrapped fields are already flattened to scalars.
+        if paper_text:
+            for line in _backfill_bibliography(merged, paper_text):
+                print(f"   ✓ backfill: {line}")
+        fin_log = _finalize_record(merged)
+        if fin_log:
+            print(f"   ✓ clerical completion: {len(fin_log)} fields "
+                  f"({', '.join(fin_log[:4])}{'…' if len(fin_log) > 4 else ''})")
+
         en_path = os.path.join(output_dir, f"{base_name}.json")
         with open(en_path, "w", encoding="utf-8") as f:
             json.dump(merged, f, indent=2, ensure_ascii=False)
@@ -1123,6 +1687,21 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
             mark = "✓ VALID" if n_violations == 0 else f"⚠ {n_violations} violation(s)"
             print(f"   schema validation: {mark}  -> {val_path}")
 
+        # Groundedness audit (deterministic): which extracted prose strings
+        # literally occur in the paper? Small local models hallucinate more
+        # than Claude — this quantifies it per run and shows the curator
+        # where to look. Written for every backend so runs are comparable.
+        confidence = None
+        if paper_text:
+            confidence = _confidence_report(merged, paper_text)
+            conf_path = os.path.join(output_dir, f"{base_name}_confidence.json")
+            with open(conf_path, "w", encoding="utf-8") as f:
+                json.dump(confidence, f, indent=2, ensure_ascii=False)
+            if confidence["grounded_ratio"] is not None:
+                print(f"   groundedness: {confidence['grounded_ratio']:.0%} of "
+                      f"{confidence['checked_fields']} prose fields verbatim "
+                      f"in the paper -> {conf_path}")
+
         # per-section raw dump for debugging
         dbg_path = os.path.join(output_dir, "_parallel_sections_raw.json")
         with open(dbg_path, "w", encoding="utf-8") as f:
@@ -1131,6 +1710,11 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
                       f, indent=2, ensure_ascii=False)
 
         # translation pass (sequential, after gather; skippable for fast UI)
+        # Local runs skip it: the Haiku translation model needs the Claude API.
+        if translate and is_local:
+            translate = False
+            print("   ⤷ JA translation skipped — needs the Claude API "
+                  "(local extraction run)")
         if translate:
             tr_model = model if is_gemini else TRANSLATION_MODEL
             print(f"⤷ Translating EN → JA (1 call, {tr_model})...")
@@ -1168,6 +1752,10 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         "n_sections_ok": sum(1 for r in results if r["ok"]),
         "n_sections": len(results),
         "n_schema_violations": n_violations,
+        "confidence": ({"grounded_ratio": confidence["grounded_ratio"],
+                        "checked_fields": confidence["checked_fields"],
+                        "verified_fields": confidence["verified_fields"]}
+                       if confidence else None),
         "sections": {r["key"]: {
             "ok": r["ok"], "error": r["error"],
             "input_tokens": r["input_tokens"], "output_tokens": r["output_tokens"],
