@@ -1,18 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-vlm_verifier.py — focused gap-fill + stray-remove via Claude.
-Sends original chart + numbered overlay (with px grid) to Claude.
-Returns corrections: missing points to add, stray points to remove.
-No merging, no swaps — keep it simple and safe.
+vlm_verifier.py — figure-level AI curation (axes, legends, gap-fill, vocab).
+Sends original chart + numbered overlay (with px grid) to the active VLM
+backend — the Claude API or a local OpenAI-compatible server (llm_backend.py)
+— so closed-access figures can stay on the lab network.
+Corrections are add/remove only: no merging, no swaps — simple and safe.
 """
 import os, io, json, base64
 import cv2, numpy as np
 
-try:
-    import anthropic
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
+from llm_backend import (LLMBackend, backend_available,
+                         ANTHROPIC_SDK_AVAILABLE as ANTHROPIC_AVAILABLE)
 
 DEFAULT_MODEL = "claude-opus-4-8"
 
@@ -27,18 +25,10 @@ _SYSTEM_PROMPT = (
 
 class VLMVerifier:
     def __init__(self, api_key=None, model=DEFAULT_MODEL, max_tokens=4096,
-                 verify_ssl=True, remove_tolerance_px=15):
-        if not ANTHROPIC_AVAILABLE:
-            raise RuntimeError("Run: pip install anthropic")
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
-            raise RuntimeError("Set ANTHROPIC_API_KEY env var or pass api_key=...")
-        if verify_ssl:
-            self.client = anthropic.Anthropic(api_key=key)
-        else:
-            import httpx
-            self.client = anthropic.Anthropic(
-                api_key=key, http_client=httpx.Client(verify=False))
+                 verify_ssl=True, remove_tolerance_px=15, backend=None):
+        self._backend = LLMBackend(backend=backend, api_key=api_key,
+                                   verify_ssl=verify_ssl)
+        self.backend_name = self._backend.backend   # "anthropic" | "local"
         self.model = model
         self.max_tokens = max_tokens
         self.remove_tolerance_px = remove_tolerance_px
@@ -52,28 +42,24 @@ class VLMVerifier:
         overlay_b64 = self._encode_png(overlay)
         prompt = self._build_prompt(w, h, data_series, colors)
 
-        message = self.client.messages.create(
+        raw_text = self._backend.chat(
+            system=_SYSTEM_PROMPT,
             model=self.model,
             max_tokens=self.max_tokens,
-            system=_SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "IMAGE 1 — original chart:"},
-                    {"type": "image",
-                     "source": {"type": "base64", "media_type": "image/png",
-                                "data": original_b64}},
-                    {"type": "text",
-                     "text": "IMAGE 2 — current extraction overlay "
-                             "(numbered lines + gray coordinate grid):"},
-                    {"type": "image",
-                     "source": {"type": "base64", "media_type": "image/png",
-                                "data": overlay_b64}},
-                    {"type": "text", "text": prompt},
-                ],
-            }],
+            blocks=[
+                {"type": "text", "text": "IMAGE 1 — original chart:"},
+                {"type": "image",
+                 "source": {"type": "base64", "media_type": "image/png",
+                            "data": original_b64}},
+                {"type": "text",
+                 "text": "IMAGE 2 — current extraction overlay "
+                         "(numbered lines + gray coordinate grid):"},
+                {"type": "image",
+                 "source": {"type": "base64", "media_type": "image/png",
+                            "data": overlay_b64}},
+                {"type": "text", "text": prompt},
+            ],
         )
-        raw_text = "".join(b.text for b in message.content if b.type == "text")
         parsed = self._parse_response(raw_text)
         corrected = self._apply_corrections(data_series, parsed, w, h)
         return corrected, {"raw": raw_text, "parsed": parsed}
@@ -115,23 +101,19 @@ class VLMVerifier:
                    f"(log={axis_config.get('yIsLogScale')}). Correct it if wrong.")
         prompt = self._build_axis_prompt() + cur
 
-        message = self.client.messages.create(
+        raw_text = self._backend.chat(
             model=model or self.model,
             max_tokens=1500,
             system=("You read chart AXIS calibrations precisely. You handle "
                     "scientific/exponential notation and log scales. You output "
                     "ONLY a single JSON object — no markdown fences, no prose."),
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image",
-                     "source": {"type": "base64", "media_type": "image/png",
-                                "data": b64}},
-                    {"type": "text", "text": prompt},
-                ],
-            }],
+            blocks=[
+                {"type": "image",
+                 "source": {"type": "base64", "media_type": "image/png",
+                            "data": b64}},
+                {"type": "text", "text": prompt},
+            ],
         )
-        raw_text = "".join(b.text for b in message.content if b.type == "text")
         return self._parse_response(raw_text)
 
     def read_axis_properties(self, img, model=None):
@@ -159,22 +141,18 @@ class VLMVerifier:
             ' "y_axis": {"name": "...", "unit": "...", "is_log": false},\n'
             ' "notes": "<short note if anything was ambiguous, else empty>"}'
         )
-        message = self.client.messages.create(
+        raw_text = self._backend.chat(
             model=model or self.model,
             max_tokens=800,
             system=("You read chart axes precisely. You output ONLY a single "
                     "JSON object — no markdown fences, no prose."),
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image",
-                     "source": {"type": "base64", "media_type": "image/png",
-                                "data": b64}},
-                    {"type": "text", "text": prompt},
-                ],
-            }],
+            blocks=[
+                {"type": "image",
+                 "source": {"type": "base64", "media_type": "image/png",
+                            "data": b64}},
+                {"type": "text", "text": prompt},
+            ],
         )
-        raw_text = "".join(b.text for b in message.content if b.type == "text")
         return self._parse_response(raw_text)
 
     def read_secondary_axes(self, img, plot_area, model=None):
@@ -221,23 +199,19 @@ class VLMVerifier:
             '"is_log": false, "ticks": []},\n'
             ' "notes": ""}'
         )
-        message = self.client.messages.create(
+        raw_text = self._backend.chat(
             model=model or self.model,
             max_tokens=1500,
             system=("You read chart AXES precisely. You handle scientific/"
                     "exponential notation and log scales. You output ONLY a "
                     "single JSON object — no markdown fences, no prose."),
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image",
-                     "source": {"type": "base64", "media_type": "image/png",
-                                "data": b64}},
-                    {"type": "text", "text": prompt},
-                ],
-            }],
+            blocks=[
+                {"type": "image",
+                 "source": {"type": "base64", "media_type": "image/png",
+                            "data": b64}},
+                {"type": "text", "text": prompt},
+            ],
         )
-        raw_text = "".join(b.text for b in message.content if b.type == "text")
         return self._parse_response(raw_text)
 
     def canonicalize_properties(self, labels, model=None):
@@ -272,14 +246,13 @@ class VLMVerifier:
             '[{"label": "...", "is_property": true, "name": "...", '
             '"category": "...", "unit": "..."}, ...]'
         )
-        message = self.client.messages.create(
+        raw_text = self._backend.chat(
             model=model or self.model,
             max_tokens=1000,
             system=("You are a materials-science vocabulary curator. You output "
                     "ONLY a single JSON array — no markdown fences, no prose."),
-            messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+            blocks=[{"type": "text", "text": prompt}],
         )
-        raw_text = "".join(b.text for b in message.content if b.type == "text")
         return self._parse_response(raw_text)
 
     def label_lines_by_legend(self, img, data_series, colors=None, model=None):
@@ -306,27 +279,23 @@ class VLMVerifier:
             desc.append(f"  line {idx}: overlay markers in RGB({int(r)},{int(g)},{int(b)})")
         prompt = self._build_label_prompt(n, "\n".join(desc))
 
-        message = self.client.messages.create(
+        raw = self._backend.chat(
             model=model or self.model,
             max_tokens=1200,
             system=("You match extracted chart curves to their legend labels by "
                     "reading the chart. You output ONLY a single JSON object — no "
                     "markdown fences, no prose."),
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "IMAGE 1 — original chart (read its legend here):"},
-                    {"type": "image", "source": {"type": "base64",
-                        "media_type": "image/png", "data": original_b64}},
-                    {"type": "text", "text": "IMAGE 2 — same chart, each detected line drawn "
-                                             "as numbered colored markers over the real curves:"},
-                    {"type": "image", "source": {"type": "base64",
-                        "media_type": "image/png", "data": overlay_b64}},
-                    {"type": "text", "text": prompt},
-                ],
-            }],
+            blocks=[
+                {"type": "text", "text": "IMAGE 1 — original chart (read its legend here):"},
+                {"type": "image", "source": {"type": "base64",
+                    "media_type": "image/png", "data": original_b64}},
+                {"type": "text", "text": "IMAGE 2 — same chart, each detected line drawn "
+                                         "as numbered colored markers over the real curves:"},
+                {"type": "image", "source": {"type": "base64",
+                    "media_type": "image/png", "data": overlay_b64}},
+                {"type": "text", "text": prompt},
+            ],
         )
-        raw = "".join(b.text for b in message.content if b.type == "text")
         parsed = self._parse_response(raw)
         labels = [None] * n
         for item in (parsed.get("labels") or []):
@@ -523,10 +492,15 @@ class VLMVerifier:
             if s.lstrip().lower().startswith("json"):
                 s = s.lstrip()[4:]
             s = s.strip()
-        if not s.startswith("{"):
-            start, end = s.find("{"), s.rfind("}")
-            if start == -1 or end == -1:
-                raise ValueError(f"No JSON object found in VLM response:\n{text[:500]}")
+        if not s.startswith(("{", "[")):
+            # Salvage the outermost JSON value ({...} or [...]) from prose.
+            starts = [i for i in (s.find("{"), s.find("[")) if i != -1]
+            if not starts:
+                raise ValueError(f"No JSON found in VLM response:\n{text[:500]}")
+            start = min(starts)
+            end = s.rfind("}" if s[start] == "{" else "]")
+            if end <= start:
+                raise ValueError(f"No JSON found in VLM response:\n{text[:500]}")
             s = s[start:end + 1]
         return json.loads(s)
 
