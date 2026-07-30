@@ -104,6 +104,48 @@
       "category": "curator-added property (extension)",
       "unit": "",
       "added_by": "curator"
+    },
+    {
+      "name": "Diffraction angle, 2θ",
+      "category": "curator-added property (extension)",
+      "unit": "deg.",
+      "added_by": "curator"
+    },
+    {
+      "name": "Intensity",
+      "category": "curator-added property (extension)",
+      "unit": "arb. units",
+      "added_by": "curator"
+    },
+    {
+      "name": "thickness",
+      "category": "curator-added property (extension)",
+      "unit": "nm",
+      "added_by": "curator"
+    },
+    {
+      "name": "sheet resistance",
+      "category": "curator-added property (extension)",
+      "unit": "Ω sq^-1",
+      "added_by": "curator"
+    },
+    {
+      "name": "density",
+      "category": "physical property (extension)",
+      "unit": "g cm^-3",
+      "added_by": "claude"
+    },
+    {
+      "name": "inverse temperature",
+      "category": "thermal property (extension)",
+      "unit": "K^-1",
+      "added_by": "claude"
+    },
+    {
+      "name": "recoverable energy density",
+      "category": "electrical property (extension)",
+      "unit": "J cm^-3",
+      "added_by": "claude"
     }
   ]
 }
