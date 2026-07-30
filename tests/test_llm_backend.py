@@ -59,6 +59,9 @@ def fake_server(monkeypatch):
     monkeypatch.setenv("ALD_LOCAL_LLM_URL", url)
     monkeypatch.setenv("ALD_LLM_BACKEND", "local")
     monkeypatch.delenv("ALD_LOCAL_LLM_MODEL", raising=False)
+    # isolate from the user's real settings.json (saved model/url would leak)
+    monkeypatch.setattr(llm_backend, "get_setting",
+                        lambda name, default="", path=None: default)
     _FakeOpenAIServer.requests_seen = []
     _FakeOpenAIServer.canned_text = "{}"
     yield url
@@ -99,7 +102,8 @@ def test_local_chat_converts_blocks_and_autodetects_model(fake_server):
     assert out == "hello from local"
     req = _FakeOpenAIServer.requests_seen[-1]
     assert req["model"] == "fake/served-model"
-    assert req["max_tokens"] == 99
+    # local backend doubles the budget (min 2048) for thinking-style models
+    assert req["max_tokens"] == 2048
     assert req["messages"][0] == {"role": "system", "content": "sys prompt"}
     user = req["messages"][1]["content"]
     assert user[0] == {"type": "text", "text": "look at this"}

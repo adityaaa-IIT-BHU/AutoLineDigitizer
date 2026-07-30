@@ -142,7 +142,9 @@ class LLMBackend:
             headers["Authorization"] = f"Bearer {token}"
         payload = {
             "model": self._local_model(headers),
-            "max_tokens": max_tokens,
+            # thinking-style local models spend tokens reasoning before any
+            # content appears — give them headroom over the caller's budget
+            "max_tokens": max(max_tokens * 2, 2048),
             "temperature": 0,     # curation wants determinism, not flair
             "messages": [
                 {"role": "system", "content": system},
@@ -153,11 +155,15 @@ class LLMBackend:
                              headers=headers, timeout=_LOCAL_TIMEOUT,
                              verify=self.verify_ssl)
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"].get("content")
+        message = resp.json()["choices"][0]["message"]
+        content = message.get("content")
         if isinstance(content, list):   # some servers return content parts
             content = "".join(p.get("text", "") for p in content
                               if isinstance(p, dict))
-        return content or ""
+        # a thinking model that ran out of budget may leave the answer in
+        # its reasoning trace — better to salvage than to return nothing
+        return content or message.get("reasoning") \
+            or message.get("reasoning_content") or ""
 
     def _local_model(self, headers):
         configured = _cfg("ALD_LOCAL_LLM_MODEL", "local_llm_model")
