@@ -42,3 +42,32 @@ def push_record(url: str, api_key: str, record: Dict[str, Any],
             "unit_normalized_curves": body.get("unit_normalized_curves"),
             "non_kmds_properties": body.get("non_kmds_properties") or [],
             "n_violations": body.get("n_violations"), "url": url}
+
+
+def push_provenance(url: str, api_key: str, doi: str,
+                    figures: "list[Dict[str, Any]]",
+                    timeout: float = 120.0) -> Dict[str, Any]:
+    """POST digitization provenance (figure crop + calibration + extractor
+    versions per figure) for an already-uploaded record. Never raises.
+
+    figures: [{"label", "page", "png_b64", "calibration", "extractor",
+               "curator"}] — see Starrydata3 /api/v1/provenance."""
+    url = (url or "").strip().rstrip("/")
+    if not url or not api_key:
+        return {"ok": False, "error": "No Starrydata3 URL/API key set"}
+    try:
+        import httpx
+        r = httpx.post(url + "/api/v1/provenance",
+                       json={"doi": doi, "figures": figures},
+                       headers={"X-API-Key": (api_key or "").strip()},
+                       timeout=timeout)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    try:
+        body = r.json()
+    except Exception:
+        body = {"text": r.text[:300]}
+    if r.status_code >= 400:
+        detail = body.get("detail", body) if isinstance(body, dict) else body
+        return {"ok": False, "error": f"HTTP {r.status_code}: {detail}"}
+    return {"ok": True, "figures_stored": body.get("figures_stored")}

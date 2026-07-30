@@ -58,18 +58,22 @@ from pathlib import Path
 
 from smart_axis_extractor import SmartAxisExtractor
 import app_settings
-from app_settings import load_saved_api_key, save_api_key
+from app_settings import (load_saved_api_key, save_api_key,
+                          get_setting, set_setting)
 
 # Activate a previously-saved Anthropic key (env var wins) before any of the
 # VLM/KMDS components check for one.
 load_saved_api_key()
 
 try:
-    from vlm_verifier import VLMVerifier, ANTHROPIC_AVAILABLE
+    from vlm_verifier import VLMVerifier, ANTHROPIC_AVAILABLE, backend_available
     VLM_VERIFIER_AVAILABLE = True
 except Exception as _vlm_err:
     VLM_VERIFIER_AVAILABLE = False
     ANTHROPIC_AVAILABLE = False
+
+    def backend_available():
+        return False
 
 try:
     import kmds_vocab
@@ -447,6 +451,15 @@ class LineFormerApp:
             print(f"[axis] X fit: residual={result.x_fit.rms_residual_px:.2f}px, dropped {result.x_fit.n_ticks_dropped}, log={result.x_fit.is_log}")
         if result.y_fit:
             print(f"[axis] Y fit: residual={result.y_fit.rms_residual_px:.2f}px, dropped {result.y_fit.n_ticks_dropped}, log={result.y_fit.is_log}")
+        # secondary axes (right-hand y / top x) found by the same tick fitter —
+        # stashed for the app to pick up after calibration
+        self.last_alt_axis_configs = dict(getattr(result, "alt_axis_configs", {}) or {})
+        if result.y2_fit:
+            print(f"[axis] RIGHT y-axis: {len(result.y2_labels)} ticks, "
+                  f"residual={result.y2_fit.rms_residual_px:.2f}px, log={result.y2_fit.is_log}")
+        if result.x2_fit:
+            print(f"[axis] TOP x-axis: {len(result.x2_labels)} ticks, "
+                  f"residual={result.x2_fit.rms_residual_px:.2f}px, log={result.x2_fit.is_log}")
         for w in result.warnings:
             print(f"[axis] warning: {w}")
         return result.axis_config, ocr_results
@@ -920,6 +933,42 @@ class LineFormerApp:
             draw_calib_point(result_img, x2_x, x2_y, calib_color, f"X2={axis_config['x2_val']}", (-100, -5))
             draw_calib_point(result_img, y1_x, y1_y, calib_color, f"Y1={axis_config['y1_val']}", (15, 20))
             draw_calib_point(result_img, y2_x, y2_y, calib_color, f"Y2={axis_config['y2_val']}", (15, -5))
+
+            # SECONDARY axes (right-hand y / top x) get the same treatment in
+            # ORANGE so both calibrations are visible and checkable at once.
+            alt = getattr(self, "axis_alt", None) or {}
+            pa = getattr(self, "cached_plot_area", None)
+            if alt and pa is not None:
+                alt_color = (0, 140, 255)
+                px0, py0, px1, py1 = [int(v) for v in pa]
+
+                def _dash(img, p1, p2, color):
+                    ddx, ddy = p2[0] - p1[0], p2[1] - p1[1]
+                    d = max(1, int(np.sqrt(ddx * ddx + ddy * ddy)))
+                    for i in range(0, d, dash_length + gap_length):
+                        sx = int(p1[0] + ddx * i / d)
+                        sy = int(p1[1] + ddy * i / d)
+                        ei = min(i + dash_length, d)
+                        ex = int(p1[0] + ddx * ei / d)
+                        ey = int(p1[1] + ddy * ei / d)
+                        cv2.line(img, (sx, sy), (ex, ey), color, 2)
+
+                if "y2" in alt:
+                    a = alt["y2"]
+                    ry1, ry2 = int(a["y1_py"]), int(a["y2_py"])
+                    _dash(result_img, (px1, ry1), (px1, ry2), alt_color)
+                    draw_calib_point(result_img, px1, ry1, alt_color,
+                                     f"R1={float(a['y1_val']):g}", (-150, 20))
+                    draw_calib_point(result_img, px1, ry2, alt_color,
+                                     f"R2={float(a['y2_val']):g}", (-150, -5))
+                if "x2" in alt:
+                    a = alt["x2"]
+                    tx1, tx2 = int(a["x1_px"]), int(a["x2_px"])
+                    _dash(result_img, (tx1, py0), (tx2, py0), alt_color)
+                    draw_calib_point(result_img, tx1, py0, alt_color,
+                                     f"T1={float(a['x1_val']):g}", (15, 28))
+                    draw_calib_point(result_img, tx2, py0, alt_color,
+                                     f"T2={float(a['x2_val']):g}", (-130, 28))
         return result_img
 
     def convert_to_starry_digitizer_format(self, data_series, img_shape, axis_config=None):
@@ -1437,8 +1486,9 @@ def main(page: ft.Page):
         if pick == "all":
             cols = [ft.DataColumn(ft.Text("#"))]
             for i in range(n_lines):
-                cols.append(ft.DataColumn(ft.Text(f"{app.line_name(i)} {x_name}")))
-                cols.append(ft.DataColumn(ft.Text(f"{app.line_name(i)} {y_name}")))
+                xh, yh = _series_axis_names(i, x_name, y_name)
+                cols.append(ft.DataColumn(ft.Text(f"{app.line_name(i)} {xh}")))
+                cols.append(ft.DataColumn(ft.Text(f"{app.line_name(i)} {yh}")))
             data_table.columns = cols
             max_len = max((len(s["points"]) for s in app.data_series), default=0)
             shown = min(max_len, MAX_TABLE_ROWS)
@@ -1467,10 +1517,11 @@ def main(page: ft.Page):
             except Exception:
                 idx = 0
             idx = max(0, min(idx, n_lines - 1))
+            xh, yh = _series_axis_names(idx, x_name, y_name)
             data_table.columns = [
                 ft.DataColumn(ft.Text("#")),
-                ft.DataColumn(ft.Text(x_name)),
-                ft.DataColumn(ft.Text(y_name)),
+                ft.DataColumn(ft.Text(xh)),
+                ft.DataColumn(ft.Text(yh)),
             ]
             pts = app.data_series[idx].get("points", [])
             shown = min(len(pts), MAX_TABLE_ROWS)
@@ -1819,11 +1870,13 @@ def main(page: ft.Page):
             return out
 
         try:
-            if VLM_VERIFIER_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY"):
+            if VLM_VERIFIER_AVAILABLE and backend_available():
                 if app.vlm is None:
                     app.vlm = VLMVerifier(verify_ssl=True)
                 props = app.vlm.canonicalize_properties(unmatched)
-                entries = [{**p, "added_by": "claude"} for p in props
+                origin = ("claude" if app.vlm.backend_name == "anthropic"
+                          else "local-llm")
+                entries = [{**p, "added_by": origin} for p in props
                            if isinstance(p, dict) and p.get("is_property")
                            and p.get("name")]
             else:
@@ -1886,6 +1939,24 @@ def main(page: ft.Page):
         _update_kmds_pair()
         update_data_table()
 
+    def _series_axis_names(i, x_name, y_name):
+        """Column names for series i honouring its assigned axes — a curve on
+        the right-hand κ axis gets 'κ (W·m⁻¹·K⁻¹)' as its Y header."""
+        ax = (app.data_series[i].get("axes") or {}) if i < len(app.data_series) else {}
+        xn, yn = x_name, y_name
+        if ax.get("y") == "y2":
+            a = app.axis_alt.get("y2") or {}
+            nm = (a.get("name") or "").strip()
+            if nm:
+                yn = nm + (f" ({a['unit']})" if a.get("unit") else "")
+            else:
+                yn = f"{y_name} [Y2]"
+        if ax.get("x") == "x2":
+            a = app.axis_alt.get("x2") or {}
+            nm = (a.get("name") or "").strip()
+            xn = (nm + (f" ({a['unit']})" if a.get("unit") else "")) if nm else f"{x_name} [X2]"
+        return xn, yn
+
     def on_table_pick_change(e):
         update_data_table()
 
@@ -1896,9 +1967,9 @@ def main(page: ft.Page):
             process_status_text.value = "Open a figure first."
             page.update()
             return
-        if not (VLM_VERIFIER_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY")):
-            process_status_text.value = ("Claude unavailable — set an Anthropic "
-                                         "API key in Settings first.")
+        if not (VLM_VERIFIER_AVAILABLE and backend_available()):
+            process_status_text.value = ("No AI backend — set a Claude API key "
+                                         "or a local model server in Settings.")
             page.update()
             return
         axis_claude_btn.disabled = True
@@ -2112,6 +2183,52 @@ def main(page: ft.Page):
                         app.y_axis_name = y_name
                     _update_kmds_pair()
 
+                    # Secondary axes straight from ChartDete's own tick labels
+                    # (right-hand y / top x) — no Claude required. Names stay
+                    # empty until Claude or the curator supplies them.
+                    auto_alt = dict(getattr(app, "last_alt_axis_configs", {}) or {})
+                    app.axis_alt = {}
+                    notes = []
+                    if "y2" in auto_alt:
+                        a = auto_alt["y2"]
+                        app.axis_alt["y2"] = {**a, "name": "", "unit": ""}
+                        notes.append(f"Y2 (right): {a['y1_val']}→{a['y2_val']}"
+                                     + (" log" if a.get("yIsLogScale") else ""))
+                    if "x2" in auto_alt:
+                        a = auto_alt["x2"]
+                        app.axis_alt["x2"] = {**a, "name": "", "unit": ""}
+                        notes.append(f"X2 (top): {a['x1_val']}→{a['x2_val']}"
+                                     + (" log" if a.get("xIsLogScale") else ""))
+                    if notes:
+                        alt_axes_text.value = ("  ·  ".join(notes)
+                                               + "   — assign curves via the Y1/Y2 "
+                                                 "toggles; ✦ Detect all axes (AI) "
+                                                 "adds the property names")
+                    else:
+                        alt_axes_text.value = ""
+                    populate_detected_lines()   # show the Y1/Y2 toggles
+
+                    # Dual-axis figure + Claude available → read the secondary
+                    # axes' PROPERTY NAMES too (once per figure), then match
+                    # legend labels to axis names so κ-points land on the κ
+                    # axis automatically.
+                    try:
+                        fidx = app.current_figure_idx
+                        can_vlm2 = (VLM_VERIFIER_AVAILABLE and backend_available())
+                        if (app.axis_alt and can_vlm2
+                                and fidx not in getattr(app, "_vlm_alt_named", set())):
+                            if not hasattr(app, "_vlm_alt_named"):
+                                app._vlm_alt_named = set()
+                            process_status_text.value = "Reading the secondary axes with Claude…"
+                            page.update()
+                            notes2 = _claude_secondary_axes_sync()
+                            if fidx is not None:
+                                app._vlm_alt_named.add(fidx)
+                            if notes2:
+                                alt_axes_text.value = "  ·  ".join(notes2)
+                    except Exception as ex:  # noqa: BLE001
+                        print(f"[alt-axes-vlm] {ex}")
+
                     # Read the axis PROPERTIES with Claude automatically (once
                     # per figure) — OCR titles are often wrong or missing. Hand
                     # edits are never clobbered: only fields that are empty or
@@ -2119,8 +2236,7 @@ def main(page: ft.Page):
                     # still verifies via the panel (and can re-run with ✦).
                     try:
                         fidx = app.current_figure_idx
-                        can_vlm = (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE
-                                   and bool(os.environ.get("ANTHROPIC_API_KEY")))
+                        can_vlm = (VLM_VERIFIER_AVAILABLE and backend_available())
                         if can_vlm and fidx not in app._vlm_axes_read:
                             if app.vlm is None:
                                 app.vlm = VLMVerifier(verify_ssl=True)
@@ -2158,8 +2274,7 @@ def main(page: ft.Page):
                     try:
                         names = None
                         fidx = app.current_figure_idx
-                        can_vlm = (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE
-                                   and bool(os.environ.get("ANTHROPIC_API_KEY")))
+                        can_vlm = (VLM_VERIFIER_AVAILABLE and backend_available())
                         if can_vlm and fidx not in app._vlm_labeled:
                             try:
                                 import line_utils
@@ -2192,8 +2307,24 @@ def main(page: ft.Page):
                             n_named = sum(1 for nm in names if nm)
                             process_status_text.value = (
                                 f"Named {n_named}/{len(names)} curve(s) from the legend.")
+                            # legend ↔ axis matching (dual-axis): κ-labelled
+                            # curves onto the κ axis, automatically
+                            assigned = _auto_assign_axes()
+                            if assigned:
+                                populate_detected_lines()
+                                update_data_table()
+                                process_status_text.value += (
+                                    f"  ·  auto-assigned {', '.join(assigned)}")
                     except Exception as ex:  # noqa: BLE001
                         print(f"[legend] {ex}")
+                    # labels may pre-exist (revisited figure) — the legend↔axis
+                    # assignment is idempotent, so always give it a chance
+                    try:
+                        if _auto_assign_axes():
+                            populate_detected_lines()
+                            update_data_table()
+                    except Exception as ex:  # noqa: BLE001
+                        print(f"[axis-assign] {ex}")
 
             if app.axis_config is not None:
                 axis_info_text.value = f"Axis: X=[{app.axis_config['x1_val']} → {app.axis_config['x2_val']}], Y=[{app.axis_config['y1_val']} → {app.axis_config['y2_val']}]"
@@ -2208,7 +2339,7 @@ def main(page: ft.Page):
             process_progress_ring.visible = False
             export_sd_btn.disabled = False
             export_wpd_btn.disabled = False
-            verify_btn.disabled = not (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE)
+            verify_btn.disabled = not (VLM_VERIFIER_AVAILABLE and backend_available())
             detect_markers_btn.disabled = not MARKER_DETECTOR_AVAILABLE
             scatter_btn.disabled = False
             alt_axes_btn.disabled = False
@@ -2219,8 +2350,8 @@ def main(page: ft.Page):
                 process_status_text.value = ((process_status_text.value or "")
                     + "  · Few line points found — if this is a scatter chart, "
                       "try “Detect points (scatter)”.").strip(" ·")
-            axis_fix_btn.disabled = not (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE)
-            label_lines_btn.disabled = not (VLM_VERIFIER_AVAILABLE and ANTHROPIC_AVAILABLE)
+            axis_fix_btn.disabled = not (VLM_VERIFIER_AVAILABLE and backend_available())
+            label_lines_btn.disabled = not (VLM_VERIFIER_AVAILABLE and backend_available())
             try:
                 _sync_review_ui()   # this figure is now digitized -> enable Axes/Extraction checks
             except Exception:  # noqa: BLE001
@@ -2988,6 +3119,7 @@ def main(page: ft.Page):
             "n_lines": len(app.data_series), "n_points": total, "series": series,
             "series_names": series_names,
             "series_axes": series_axes, "alt_axes": alt_axes,
+            "axis_config": dict(app.axis_config or {}),   # provenance capsule
         }
         if not kmds_clock.get("running"):
             open_record_btn.disabled = False   # something to view now
@@ -3499,6 +3631,33 @@ def main(page: ft.Page):
             finally:
                 app.fig_digitizations = all_digs     # always restore the full set
             if res.get("ok"):
+                # ship the provenance capsule: per approved figure, the crop
+                # + axis calibration + extractor versions (best-effort — a
+                # failure here never blocks the successful record upload)
+                try:
+                    import getpass
+                    prov_figs = []
+                    for k in sorted(approved, key=str):
+                        dig = all_digs.get(k) or {}
+                        png_b64 = ""
+                        if isinstance(k, int) and 0 <= k < len(app.pdf_figures):
+                            ok_png, buf = cv2.imencode(".png", app.pdf_figures[k][0])
+                            if ok_png:
+                                png_b64 = base64.b64encode(buf).decode()
+                        prov_figs.append({
+                            "label": dig.get("label") or f"figure {k}",
+                            "page": dig.get("page"), "png_b64": png_b64,
+                            "calibration": dig.get("axis_config") or {},
+                            "extractor": {
+                                "app": f"AutoLineDigitizer v{APP_VERSION}",
+                                "line_model": str(model_dropdown.value or "")},
+                            "curator": getpass.getuser()})
+                    pres = starrydata3_client.push_provenance(
+                        url, key, res.get("doi") or "", prov_figs)
+                    if not pres.get("ok"):
+                        print(f"[provenance] upload failed: {pres.get('error')}")
+                except Exception as ex:  # noqa: BLE001
+                    print(f"[provenance] {ex}")
                 base = url.rstrip("/")
                 nonk = res.get("non_kmds_properties") or []
                 nonk_note = (f"  ⚠ non-KMDS props: {', '.join(nonk[:4])}" if nonk else "")
@@ -3913,6 +4072,103 @@ def main(page: ft.Page):
 
     label_lines_btn.on_click = on_label_lines_click
 
+    def _claude_secondary_axes_sync():
+        """Blocking Claude read of secondary axes, MERGED into app.axis_alt:
+        axes Claude sees get its calibration + property names; axes it misses
+        keep their ChartDete auto-calibration. Returns display notes (possibly
+        from surviving auto entries), or None on API failure."""
+        if app.vlm is None:
+            app.vlm = VLMVerifier(verify_ssl=True)
+        res = app.vlm.read_secondary_axes(app.current_image, app.cached_plot_area)
+        px0, py0, px1, py1 = [float(v) for v in app.cached_plot_area]
+
+        def _two_ticks(ax_obj):
+            ticks = sorted((t for t in (ax_obj.get("ticks") or [])
+                            if isinstance(t, dict)
+                            and isinstance(t.get("value"), (int, float))
+                            and isinstance(t.get("frac"), (int, float))),
+                           key=lambda t: t["frac"])
+            return (ticks[0], ticks[-1]) if len(ticks) >= 2 else (None, None)
+
+        yr = res.get("y_right") or {}
+        t0, t1 = _two_ticks(yr)
+        if yr.get("present") and t0 is not None and t0 is not t1:
+            app.axis_alt["y2"] = {
+                "y1_py": py1 - float(t0["frac"]) * (py1 - py0),
+                "y1_val": float(t0["value"]),
+                "y2_py": py1 - float(t1["frac"]) * (py1 - py0),
+                "y2_val": float(t1["value"]),
+                "yIsLogScale": bool(yr.get("is_log")),
+                "name": (yr.get("name") or "").strip(),
+                "unit": (yr.get("unit") or "").strip()}
+        elif yr.get("present") and "y2" in app.axis_alt:
+            # Claude confirmed the axis but couldn't read ticks — keep the
+            # auto calibration, take the name
+            app.axis_alt["y2"]["name"] = (yr.get("name") or "").strip()
+            app.axis_alt["y2"]["unit"] = (yr.get("unit") or "").strip()
+        xt = res.get("x_top") or {}
+        t0, t1 = _two_ticks(xt)
+        if xt.get("present") and t0 is not None and t0 is not t1:
+            app.axis_alt["x2"] = {
+                "x1_px": px0 + float(t0["frac"]) * (px1 - px0),
+                "x1_val": float(t0["value"]),
+                "x2_px": px0 + float(t1["frac"]) * (px1 - px0),
+                "x2_val": float(t1["value"]),
+                "xIsLogScale": bool(xt.get("is_log")),
+                "name": (xt.get("name") or "").strip(),
+                "unit": (xt.get("unit") or "").strip()}
+        elif xt.get("present") and "x2" in app.axis_alt:
+            app.axis_alt["x2"]["name"] = (xt.get("name") or "").strip()
+            app.axis_alt["x2"]["unit"] = (xt.get("unit") or "").strip()
+        return _alt_axes_notes()
+
+    def _alt_axes_notes():
+        notes = []
+        a = app.axis_alt.get("y2")
+        if a:
+            notes.append(f"Y2 (right): {a.get('name') or '?'}"
+                         f" ({a.get('unit') or '-'})"
+                         f" {float(a['y1_val']):g}→{float(a['y2_val']):g}"
+                         + (" log" if a.get("yIsLogScale") else ""))
+        a = app.axis_alt.get("x2")
+        if a:
+            notes.append(f"X2 (top): {a.get('name') or '?'}"
+                         f" ({a.get('unit') or '-'})"
+                         f" {float(a['x1_val']):g}→{float(a['x2_val']):g}"
+                         + (" log" if a.get("xIsLogScale") else ""))
+        return notes
+
+    def _auto_assign_axes():
+        """Legend ↔ axis matching: on a dual-axis figure, a series whose
+        legend label equals an axis' property name belongs to that axis
+        (κ-labelled points → the right-hand κ axis). Only unambiguous
+        matches are assigned; everything else stays on the primary axis for
+        the curator to toggle."""
+        import re as _re
+
+        def norm(s):
+            s = _re.sub(r"\([^)]*\)", "", s or "")      # (unit) suffixes
+            s = _re.sub(r"\[[^\]]*\]", "", s)          # [unit] suffixes
+            return _re.sub(r"[\W_]+", "", s.lower(), flags=_re.UNICODE)
+
+        y2n = norm((app.axis_alt.get("y2") or {}).get("name"))
+        y1n = norm(app.y_axis_name)
+        if not y2n:
+            return []
+        assigned = []
+        for i in range(len(app.data_series or [])):
+            lbl = norm(app.line_name(i))
+            if not lbl:
+                continue
+            hit2 = lbl == y2n or (len(y2n) > 1 and (y2n in lbl or lbl in y2n))
+            hit1 = bool(y1n) and (lbl == y1n or (len(y1n) > 1 and (y1n in lbl or lbl in y1n)))
+            if hit2 and not hit1:
+                app.data_series[i].setdefault("axes", {})["y"] = "y2"
+                assigned.append(f"{app.line_name(i)}→Y2")
+            elif hit1 and not hit2:
+                (app.data_series[i].get("axes") or {}).pop("y", None)
+        return assigned
+
     def on_detect_all_axes(_):
         """Claude finds and calibrates secondary axes (right-hand y / top x)
         for dual-axis figures. Curves are then assigned per-line via the
@@ -3921,8 +4177,9 @@ def main(page: ft.Page):
             process_status_text.value = "Calibrate the primary axes first (auto or Fix Axis)."
             page.update()
             return
-        if not (VLM_VERIFIER_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY")):
-            process_status_text.value = "Claude unavailable — set an Anthropic API key in Settings."
+        if not (VLM_VERIFIER_AVAILABLE and backend_available()):
+            process_status_text.value = ("No AI backend — set a Claude API key "
+                                         "or a local model server in Settings.")
             page.update()
             return
         alt_axes_btn.disabled = True
@@ -3931,55 +4188,13 @@ def main(page: ft.Page):
 
         def _work():
             try:
-                if app.vlm is None:
-                    app.vlm = VLMVerifier(verify_ssl=True)
-                res = app.vlm.read_secondary_axes(app.current_image, app.cached_plot_area)
-                px0, py0, px1, py1 = [float(v) for v in app.cached_plot_area]
-                app.axis_alt = {}
-                notes = []
-
-                def _two_ticks(ax_obj):
-                    ticks = sorted((t for t in (ax_obj.get("ticks") or [])
-                                    if isinstance(t, dict)
-                                    and isinstance(t.get("value"), (int, float))
-                                    and isinstance(t.get("frac"), (int, float))),
-                                   key=lambda t: t["frac"])
-                    return (ticks[0], ticks[-1]) if len(ticks) >= 2 else (None, None)
-
-                yr = res.get("y_right") or {}
-                t0, t1 = _two_ticks(yr)
-                if yr.get("present") and t0 is not None and t0 is not t1:
-                    app.axis_alt["y2"] = {
-                        "y1_py": py1 - float(t0["frac"]) * (py1 - py0),
-                        "y1_val": float(t0["value"]),
-                        "y2_py": py1 - float(t1["frac"]) * (py1 - py0),
-                        "y2_val": float(t1["value"]),
-                        "yIsLogScale": bool(yr.get("is_log")),
-                        "name": (yr.get("name") or "").strip(),
-                        "unit": (yr.get("unit") or "").strip()}
-                    notes.append(f"Y2 (right): {yr.get('name') or '?'}"
-                                 f" ({yr.get('unit') or '-'})"
-                                 f" {t0['value']}→{t1['value']}"
-                                 + (" log" if yr.get("is_log") else ""))
-                xt = res.get("x_top") or {}
-                t0, t1 = _two_ticks(xt)
-                if xt.get("present") and t0 is not None and t0 is not t1:
-                    app.axis_alt["x2"] = {
-                        "x1_px": px0 + float(t0["frac"]) * (px1 - px0),
-                        "x1_val": float(t0["value"]),
-                        "x2_px": px0 + float(t1["frac"]) * (px1 - px0),
-                        "x2_val": float(t1["value"]),
-                        "xIsLogScale": bool(xt.get("is_log")),
-                        "name": (xt.get("name") or "").strip(),
-                        "unit": (xt.get("unit") or "").strip()}
-                    notes.append(f"X2 (top): {xt.get('name') or '?'}"
-                                 f" ({xt.get('unit') or '-'})"
-                                 f" {t0['value']}→{t1['value']}"
-                                 + (" log" if xt.get("is_log") else ""))
+                notes = _claude_secondary_axes_sync()
+                assigned = _auto_assign_axes()
                 if notes:
                     alt_axes_text.value = "  ·  ".join(notes)
-                    process_status_text.value = ("✦ Secondary axes calibrated — assign each "
-                                                 "curve with the Y1/Y2 toggle in the lines list.")
+                    process_status_text.value = ("✦ Secondary axes calibrated"
+                        + (f" — auto-assigned {', '.join(assigned)}" if assigned
+                           else " — assign curves with the Y1/Y2 toggles"))
                 else:
                     alt_axes_text.value = ""
                     process_status_text.value = "✦ No secondary axes found on this figure."
@@ -4226,17 +4441,56 @@ def main(page: ft.Page):
                     app.data_series.append({"points": pts,
                                             "label": f"Series {i + 1} ({kind})"})
                 app.selected_line_idx = None
-                # name series from the legend by colour (offline matcher)
+                # name series from the legend — Claude reads marker SHAPE as
+                # well as colour (zT hexagon vs κ diamond can share a colour);
+                # the offline colour matcher is the fallback
+                names = None
+                can_vlm = (VLM_VERIFIER_AVAILABLE and backend_available())
+                if can_vlm:
+                    try:
+                        import line_utils
+                        if app.vlm is None:
+                            app.vlm = VLMVerifier(verify_ssl=True)
+                        process_status_text.value = "Reading the legend with Claude…"
+                        page.update()
+                        colors = list(line_utils.get_distinct_colors(len(app.data_series)))
+                        names = app.vlm.label_lines_by_legend(
+                            app.current_image, app.data_series, colors=colors,
+                            model="claude-sonnet-4-6")
+                    except Exception as ex:  # noqa: BLE001
+                        print(f"[scatter-legend-vlm] {ex}")
+                        names = None
+                if not (names and any(names)):
+                    try:
+                        import legend_mapper
+                        names = legend_mapper.map_curves_to_legend(
+                            app.current_image, dets, series,
+                            app.chartdete_module.get_ocr_reader() if app.chartdete_module else None)
+                    except Exception as ex:  # noqa: BLE001
+                        print(f"[scatter-legend] {ex}")
+                        names = None
+                for i, nm in enumerate(names or []):
+                    if nm and i < len(app.data_series):
+                        app.data_series[i]["label"] = nm
+
+                # dual-axis: make sure the secondary axes have NAMES, then
+                # match legend labels to axis names (κ points → κ axis)
+                assigned = []
                 try:
-                    import legend_mapper
-                    names = legend_mapper.map_curves_to_legend(
-                        app.current_image, dets, series,
-                        app.chartdete_module.get_ocr_reader() if app.chartdete_module else None)
-                    for i, nm in enumerate(names or []):
-                        if nm and i < len(app.data_series):
-                            app.data_series[i]["label"] = nm
+                    if app.axis_alt:
+                        need_names = any(not (v.get("name") or "").strip()
+                                         for v in app.axis_alt.values())
+                        if need_names and can_vlm:
+                            process_status_text.value = "Reading the secondary axes with Claude…"
+                            page.update()
+                            _claude_secondary_axes_sync()
+                        notes = _alt_axes_notes()
+                        if notes:
+                            alt_axes_text.value = "  ·  ".join(notes)
+                        assigned = _auto_assign_axes()
                 except Exception as ex:  # noqa: BLE001
-                    print(f"[scatter-legend] {ex}")
+                    print(f"[scatter-axes] {ex}")
+
                 app.result_image = app.draw_points_on_image(
                     app.current_image, app.data_series, app.axis_config)
                 result_image.src_base64 = image_to_base64(
@@ -4247,8 +4501,9 @@ def main(page: ft.Page):
                 kinds = ", ".join(("open " if m["hollow"] else "") + m["shape"]
                                   for m in meta)
                 process_status_text.value = (
-                    f"✓ Scatter: {len(series)} series, {n_pts} points ({kinds}) — "
-                    "check the overlay, edit if needed, then approve.")
+                    f"✓ Scatter: {len(series)} series, {n_pts} points ({kinds})"
+                    + (f"  ·  auto-assigned {', '.join(assigned)}" if assigned else "")
+                    + " — check the overlay, edit if needed, then approve.")
             except Exception as ex:  # noqa: BLE001
                 import traceback
                 traceback.print_exc()
@@ -4275,13 +4530,61 @@ def main(page: ft.Page):
     )
     api_key_save_btn = ft.OutlinedButton("Save key")
 
+    # ---- Local model server (OpenAI-compatible: vLLM / Ollama / LM Studio;
+    # keeps closed-access figures on the lab network) ----
+    local_url_field = ft.TextField(
+        label="Local server URL", width=260, dense=True,
+        value=get_setting("local_llm_url"),
+        hint_text="http://192.168.1.50:8000/v1",
+    )
+    local_model_field = ft.TextField(
+        label="Model id (blank = auto-detect)", width=260, dense=True,
+        value=get_setting("local_llm_model"),
+        hint_text="Qwen/Qwen2.5-VL-32B-Instruct-AWQ",
+    )
+    backend_dropdown = ft.Dropdown(
+        label="AI backend", width=260, dense=True,
+        value=get_setting("llm_backend") or "auto",
+        options=[ft.dropdown.Option("auto", "Auto (Claude if key, else local)"),
+                 ft.dropdown.Option("anthropic", "Claude API"),
+                 ft.dropdown.Option("local", "Local server")],
+    )
+    local_status = ft.Text(
+        "Local server set" if get_setting("local_llm_url") else "Not configured",
+        size=11,
+        color=OK if get_setting("local_llm_url") else INK_3,
+    )
+    local_save_btn = ft.OutlinedButton("Save local setup")
+
+    def on_save_local(_):
+        try:
+            set_setting("local_llm_url", (local_url_field.value or "").strip())
+            set_setting("local_llm_model",
+                        (local_model_field.value or "").strip())
+            choice = backend_dropdown.value or "auto"
+            set_setting("llm_backend", "" if choice == "auto" else choice)
+        except Exception as ex:
+            local_status.value = f"Save failed: {ex}"
+            local_status.color = ERR
+            page.update()
+            return
+        configured = bool((local_url_field.value or "").strip())
+        local_status.value = ("Local server set" if configured
+                              else "Not configured")
+        local_status.color = OK if configured else INK_3
+        _sync_review_ui()
+        page.update()
+
+    local_save_btn.on_click = on_save_local
+
     # One consistent pill silhouette across every action button; per-button
     # colors (e.g. the destructive Delete Line) are set at the constructor.
     for _b in (upload_btn, open_pdf_btn, recrop_btn, delete_fig_btn, review_figures_btn, kmds_btn,
                save_fig_btn, open_record_btn, sd3_upload_btn, export_sd_btn, export_wpd_btn,
                verify_btn, detect_markers_btn, axis_fix_btn, label_lines_btn,
                erase_btn, add_btn, apply_btn, done_btn, export_csv_btn,
-               api_key_save_btn, kmds_save_btn, kmds_download_btn):
+               api_key_save_btn, local_save_btn, kmds_save_btn,
+               kmds_download_btn):
         _b.style = ft.ButtonStyle(shape=_btn_shape)
 
     def on_save_api_key(_):
@@ -4318,6 +4621,12 @@ def main(page: ft.Page):
             _section_header(ft.icons.KEY, "Claude API"),
             api_key_field,
             ft.Row([api_key_save_btn, api_key_status], spacing=8),
+            _soft_divider(),
+            _section_header(ft.icons.LAN, "Local model server"),
+            backend_dropdown,
+            local_url_field,
+            local_model_field,
+            ft.Row([local_save_btn, local_status], spacing=8),
             _soft_divider(),
             _section_header(ft.icons.TUNE, "Sampling"),
             downsample_dropdown,
