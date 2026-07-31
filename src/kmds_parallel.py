@@ -1594,8 +1594,9 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
             # >MAX_FIGURE_CROPS means no crops, so vision buys nothing)
             usable_crops = bool(paper_figures
                                 and 0 < len(paper_figures) <= MAX_FIGURE_CROPS)
-            sec_model = {k: ((LOCAL_PREFIX + _local_vision_model())
-                             if k == "data_sources" and usable_crops
+            vision = _local_vision_model()
+            sec_model = {k: ((LOCAL_PREFIX + vision)
+                             if k == "data_sources" and usable_crops and vision
                              else model)
                          for k in phase2_keys}
         else:
