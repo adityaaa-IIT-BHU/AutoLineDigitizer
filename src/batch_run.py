@@ -140,6 +140,7 @@ def run_pdf(app, pdf_path: str, args) -> dict:
             base = os.path.splitext(os.path.basename(pdf_path))[0]
             kmds_out = os.path.join(os.path.dirname(os.path.abspath(pdf_path)),
                                     f"{base}_kmds")
+            os.makedirs(kmds_out, exist_ok=True)
             prompt = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "extraction_prompt.md")
             print(f"  ⤷ KMDS ({model})...")
