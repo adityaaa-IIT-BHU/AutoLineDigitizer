@@ -2138,9 +2138,63 @@ def main(page: ft.Page):
     verify_btn = None
     detect_markers_btn = None
 
+    def _restore_batch_figure():
+        """If the open PDF has batch-run state for the current figure,
+        restore it (pixel-space curves + axis calibration + names) instead
+        of re-digitizing — the batch runner already did the work; the
+        curator reviews and edits with the full toolbox."""
+        idx = app.current_figure_idx
+        entries = getattr(app, "batch_digitizations", None) or {}
+        entry = entries.get(str(idx)) if idx is not None else None
+        if not entry:
+            return False
+        try:
+            app.data_series = [
+                {"points": [[int(p[0]), int(p[1])] for p in s],
+                 "label": (entry.get("series_names") or [None] * 99)[i]}
+                for i, s in enumerate(entry.get("series_px") or [])]
+            app.axis_config = (dict(entry["axis_config"])
+                               if entry.get("axis_config") else None)
+            app.ocr_results = None
+            if entry.get("x_name"):
+                x_axis_name_field.value = entry["x_name"]
+            if entry.get("y_name"):
+                y_axis_name_field.value = entry["y_name"]
+            app.result_image = app.draw_points_on_image(
+                app.current_image, app.data_series, app.axis_config)
+            result_image.src_base64 = image_to_base64(
+                cv2.cvtColor(app.result_image, cv2.COLOR_BGR2RGB))
+            result_image.visible = True
+            total = sum(len(s["points"]) for s in app.data_series)
+            info_text.value = (f"{len(app.data_series)} lines "
+                               f"({total} points) — from batch run")
+            cal = "calibrated" if app.axis_config else "NO axis calibration"
+            process_status_text.value = (
+                f"⚡ Batch result restored ({cal}) — review the curves, "
+                f"adjust with any tool, then approve.")
+            populate_detected_lines()
+            update_data_table()
+            export_sd_btn.disabled = export_wpd_btn.disabled = False
+            verify_btn.disabled = not (VLM_VERIFIER_AVAILABLE and backend_available())
+            axis_fix_btn.disabled = not (VLM_VERIFIER_AVAILABLE and backend_available())
+            label_lines_btn.disabled = not (VLM_VERIFIER_AVAILABLE and backend_available())
+            detect_markers_btn.disabled = not MARKER_DETECTOR_AVAILABLE
+            scatter_btn.disabled = False
+            try:
+                _sync_review_ui()
+            except Exception:  # noqa: BLE001
+                pass
+            page.update()
+            return True
+        except Exception as e:  # noqa: BLE001
+            print(f"[batch-restore] figure {idx}: {e} — re-digitizing")
+            return False
+
     def process_image(skip_axis=False):
         nonlocal export_sd_btn, export_wpd_btn, verify_btn, detect_markers_btn
         if app.current_image is None or app.infer_module is None:
+            return
+        if _restore_batch_figure():
             return
         app.selected_line_idx = None
         app.edit_mode = None
@@ -2541,8 +2595,59 @@ def main(page: ft.Page):
         # Reuse an already-extracted KMDS record if one is saved next to the PDF
         # (so testing doesn't re-run the paid extraction).
         _try_load_existing_kmds(pdf_path)
+        _try_load_existing_batch(pdf_path)
         # Auto-load the first figure so the user sees results immediately.
         on_thumbnail_click(0)
+
+    def _try_load_existing_batch(pdf_path):
+        """Load {stem}_batch/digitizations.json (written by batch_run.py):
+        figures restore into the editor on click, and every digitized
+        figure is pre-staged so the paper record + uploads work even
+        before the curator visits each one."""
+        app.batch_digitizations = {}
+        try:
+            base = os.path.splitext(os.path.basename(str(pdf_path)))[0]
+            path = os.path.join(os.path.dirname(str(pdf_path)),
+                                f"{base}_batch", "digitizations.json")
+            if not os.path.exists(path):
+                return
+            with open(path, encoding="utf-8") as f:
+                state = json.load(f)
+            figs = state.get("figures") or {}
+            app.batch_digitizations = figs
+            n_pre = 0
+            for k, e in figs.items():
+                try:
+                    idx = int(k)
+                except (TypeError, ValueError):
+                    continue
+                if idx in app.fig_digitizations or not e.get("calibrated"):
+                    continue
+                app.fig_digitizations[idx] = {
+                    "label": e.get("label") or f"Figure {idx + 1}",
+                    "page": e.get("page"),
+                    "x_name": e.get("x_name") or "",
+                    "y_name": e.get("y_name") or "",
+                    "is_log_x": bool(e.get("is_log_x")),
+                    "is_log_y": bool(e.get("is_log_y")),
+                    "n_lines": e.get("n_lines") or 0,
+                    "n_points": e.get("n_points") or 0,
+                    "series": e.get("series") or [],
+                    "series_names": e.get("series_names") or [],
+                    "series_axes": [{} for _ in (e.get("series") or [])],
+                    "alt_axes": {},
+                    "axis_config": e.get("axis_config") or {},
+                    "auto": True,
+                }
+                n_pre += 1
+            if figs:
+                process_status_text.value = (
+                    f"⚡ Batch run found: {len(figs)} figure(s) digitized, "
+                    f"{n_pre} staged — click each figure to review.")
+                if not kmds_clock.get("running"):
+                    open_record_btn.disabled = False
+        except Exception as ex:  # noqa: BLE001
+            print(f"[batch-load] {ex}")
 
     def _try_load_existing_kmds(pdf_path):
         try:
