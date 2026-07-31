@@ -896,6 +896,18 @@ def _finalize_record(record: Dict[str, Any]) -> List[str]:
 
     fill("data name", (title[:80] or "KMDS record"))
     fill("data classification", ["EB0103"])
+    dc = meta.get("data classification")
+    if isinstance(dc, list):
+        codes = [c for c in dc if isinstance(c, str)
+                 and re.fullmatch(r"[A-Z]{2}\d{4}", c)]
+        topics = [c for c in dc if isinstance(c, str) and c not in codes]
+        if topics:
+            meta["data classification"] = codes or ["EB0103"]
+            kws = meta.setdefault("keywords", [])
+            if isinstance(kws, list):
+                kws.extend(t for t in topics if t not in kws)
+            log.append(f"{len(topics)} free-text classification(s) moved "
+                       f"to keywords")
     fill("data generation date", time.strftime("%Y-%m-%d"))
     doi = pub.get("DOI") if isinstance(pub.get("DOI"), str) else ""
     fill("data source", f"extracted from DOI {doi}" if doi
@@ -914,6 +926,63 @@ def _finalize_record(record: Dict[str, Any]) -> List[str]:
             log.append("metadata.keywords filled from "
                        + ("author keywords" if pub.get("author keywords")
                           else "title"))
+
+    # scope + type: snap free text onto the schema's enums; move what
+    # cannot be coerced honestly into keywords rather than inventing codes
+    scope = pub.get("scope")
+    if isinstance(scope, dict):
+        cls = scope.get("classifications")
+        if isinstance(cls, list):
+            loose = [c for c in cls if isinstance(c, str)]
+            if loose:
+                scope["classifications"] = [c for c in cls
+                                            if not isinstance(c, str)]
+                kws = meta.setdefault("keywords", [])
+                if isinstance(kws, list):
+                    kws.extend(t for t in loose if t not in kws)
+                log.append(f"{len(loose)} loose classification(s) -> keywords")
+        cls2 = scope.get("classifications")
+        if isinstance(cls2, list):
+            keep = []
+            moved = 0
+            for c in cls2:
+                if isinstance(c, dict) and c.get("scheme") and c.get("code"):
+                    keep.append(c)
+                else:
+                    label = (c.get("name") if isinstance(c, dict)
+                             else c if isinstance(c, str) else "")
+                    if label:
+                        kws = meta.setdefault("keywords", [])
+                        if isinstance(kws, list) and label not in kws:
+                            kws.append(label)
+                    moved += 1
+            if moved:
+                scope["classifications"] = keep
+                log.append(f"{moved} schemeless classification(s) -> keywords")
+        for lk in ("approaches", "purposes", "perspectives"):
+            aps = scope.get(lk)
+            if isinstance(aps, list):
+                fixed = [a.get("text") if isinstance(a, dict) and a.get("text")
+                         else a for a in aps]
+                if fixed != aps:
+                    scope[lk] = [a for a in fixed if isinstance(a, str)]
+                    log.append(f"{lk} objects flattened to text")
+        pars = scope.get("paradigms")
+        if isinstance(pars, list):
+            allowed = {"experiment", "theory", "simulation", "data-driven"}
+            kept = [x for x in pars if isinstance(x, str) and x in allowed]
+            if kept != pars:
+                scope["paradigms"] = kept or ["experiment"]
+                log.append("paradigms snapped to schema enum")
+    t = pub.get("type")
+    if isinstance(t, str):
+        enum = ["original research", "review", "commentary", "preprint",
+                "supplementary materials", "other"]
+        tl = t.strip().lower()
+        if tl not in enum:
+            snap = next((e for e in enum if e.split()[0] in tl), "other")
+            pub["type"] = snap
+            log.append(f"publication.type {t!r} snapped to {snap!r}")
 
     # mechanical shape coercions
     y = pub.get("year")
@@ -950,8 +1019,25 @@ def _finalize_record(record: Dict[str, Any]) -> List[str]:
     smps = pub.get("samples")
     if isinstance(smps, list):
         taken = {s.get("sample local id") for s in smps
-                 if isinstance(s, dict)}
+                 if isinstance(s, dict)
+                 and isinstance(s.get("sample local id"), str)}
         n = 0
+        for s in smps:
+            if not isinstance(s, dict):
+                continue
+            sid_v = s.get("sample local id")
+            if sid_v is not None and not isinstance(sid_v, str):
+                s["sample local id"] = None       # model emitted an object
+                sid_v = None
+            if (isinstance(sid_v, str) and sid_v
+                    and not re.fullmatch(r"s-\d{3}", sid_v)):
+                # the model wrote the NAME into the id slot
+                if not s.get("name"):
+                    s["name"] = sid_v
+                    log.append(f"sample name recovered from id slot: "
+                               f"{sid_v[:40]!r}")
+                s["sample local id"] = None
+                taken.discard(sid_v)
         for s in smps:
             if isinstance(s, dict) and not s.get("sample local id"):
                 n += 1
@@ -993,14 +1079,27 @@ def _backfill_bibliography(record: Dict[str, Any], paper_text: str) -> List[str]
             pub["DOI"] = doi
             log.append(f"DOI <- {doi} (regex from paper text)")
     if _empty(pub.get("title")):
-        for line in paper_text.splitlines():
+        jname = ""
+        j = pub.get("journal")
+        if isinstance(j, dict):
+            jname = (j.get("name") or "").lower()
+        elif isinstance(j, str):
+            jname = j.lower()
+        best = ""
+        for line in paper_text.splitlines()[:120]:
             t = line.strip()
-            if t.startswith("#"):
-                t = t.lstrip("# ").strip()
-                if len(t) >= 15:
-                    pub["title"] = t
-                    log.append(f"title <- {t[:60]!r} (first markdown heading)")
-                    break
+            if not t.startswith("#"):
+                continue
+            t = t.lstrip("# ").strip()
+            if len(t) < 15 or (jname and t.lower() == jname):
+                continue
+            if len(t.split()) >= 6:          # real titles are wordy
+                best = t
+                break
+            best = best or t
+        if best:
+            pub["title"] = best
+            log.append(f"title <- {best[:60]!r} (markdown heading)")
     return log
 
 
@@ -1071,6 +1170,8 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
 
     crops = paper_figures if (section_key == "data_sources" and paper_figures
                               and 0 < len(paper_figures) <= MAX_FIGURE_CROPS) else None
+    if crops and _is_local(model) and not _local_vision_model():
+        crops = None                     # vision disabled — captions only
     # local models can never fall back to the raw PDF — markdown always wins
     # (data_sources then runs from captions alone when crops are unusable)
     use_markdown = paper_text is not None and (section_key != "data_sources"
@@ -1126,6 +1227,8 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
             base.update(g)
         elif _is_local(model):
             mt = _SECTION_MAX.get(section_key, SECTION_MAX_TOKENS)
+            if section_key == "data_sources":
+                mt = 24000        # caption-rich papers overflow 16k output
             est = _est_tokens(content)
             # the abort decision uses the TEXT-ONLY estimate: crops are
             # dropped automatically when the model rejects them, so images
@@ -1158,15 +1261,16 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
             g = await _local_generate(content, model[len(LOCAL_PREFIX):],
                                       mt, num_ctx=num_ctx)
             pec = g.pop("prompt_eval", 0)
-            # only meaningful on real prompts — small ones differ from the
-            # estimate by tokenizer noise, not truncation
-            if pec and est > 2000 and pec < est * 0.6:
+            # compare against the TEXT-ONLY estimate: image tokens vary
+            # wildly per model (and text models skip them entirely), and
+            # char-based estimates overshoot — 0.5 is the safe line
+            if pec and est_text > 4000 and pec < est_text * 0.5:
                 # the server evaluated far fewer tokens than we sent —
                 # silent truncation; a "successful" answer would be built
                 # on a partial prompt, so fail the section loudly instead
                 raise RuntimeError(
                     f"server truncated the prompt (evaluated {pec} of "
-                    f"~{est} tokens) — raise ALD_LOCAL_KMDS_NUM_CTX")
+                    f"~{est_text} tokens) — raise ALD_LOCAL_KMDS_NUM_CTX")
             raw = g.pop("text")
             g.pop("stop_reason", None)
             base.update(g)
@@ -1621,6 +1725,21 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
             p2 = [await c for c in p2_coros]
         else:
             p2 = list(await asyncio.gather(*p2_coros))
+        # Local safety net: a section that answered but produced no
+        # parseable JSON gets ONE explicit do-over (temp-0 runs still vary
+        # on GPUs; the reminder usually lands).
+        if is_local:
+            for i, r in enumerate(p2):
+                if not r["ok"] and "no JSON block" in (r["error"] or ""):
+                    print(f"   ↻ {r['key']}: output was not valid JSON — one retry")
+                    p2[i] = await extract_one_section(
+                        pdf_b64, r["key"], client, blocks,
+                        section_schema=section_schemas.get(r["key"]),
+                        model=sec_model[r["key"]], context_digest=digest,
+                        paper_text=paper_text, paper_figures=paper_figures,
+                        extra_context=("REMINDER: your ENTIRE response must be "
+                                       "a single ```json code block. No prose, "
+                                       "no explanations.\n\n"))
         # Light-model safety net: retry a failed Haiku section once on Sonnet.
         for i, r in enumerate(p2):
             if not r["ok"] and sec_model.get(r["key"], model) != model:
@@ -1658,13 +1777,19 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         # paper — regex beats any model at this, and small local models miss
         # them more often than Claude does. Runs AFTER repair_record so
         # {'value': ...}-wrapped fields are already flattened to scalars.
-        if paper_text:
-            for line in _backfill_bibliography(merged, paper_text):
-                print(f"   ✓ backfill: {line}")
-        fin_log = _finalize_record(merged)
-        if fin_log:
-            print(f"   ✓ clerical completion: {len(fin_log)} fields "
-                  f"({', '.join(fin_log[:4])}{'…' if len(fin_log) > 4 else ''})")
+        try:
+            if paper_text:
+                for line in _backfill_bibliography(merged, paper_text):
+                    print(f"   ✓ backfill: {line}")
+            fin_log = _finalize_record(merged)
+            if fin_log:
+                print(f"   ✓ clerical completion: {len(fin_log)} fields "
+                      f"({', '.join(fin_log[:4])}{'…' if len(fin_log) > 4 else ''})")
+        except Exception as e:  # noqa: BLE001 — cosmetics must never kill a run
+            import traceback
+            print(f"   ⚠ post-processing error (record saved as-is): "
+                  f"{type(e).__name__}: {e}")
+            traceback.print_exc()
 
         en_path = os.path.join(output_dir, f"{base_name}.json")
         with open(en_path, "w", encoding="utf-8") as f:
