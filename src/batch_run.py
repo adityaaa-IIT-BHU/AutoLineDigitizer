@@ -31,6 +31,46 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 BATCH_VERSION = 1
+_VLM = None
+
+
+def _vlm():
+    """Local-model assistant (axis names, legend labels) — None when no
+    backend is configured; every use is best-effort."""
+    global _VLM
+    if _VLM is None:
+        try:
+            from vlm_verifier import VLMVerifier, backend_available
+            if backend_available():
+                _VLM = VLMVerifier()
+        except Exception:  # noqa: BLE001
+            _VLM = False
+    return _VLM or None
+
+
+def _scatter_series(app, img_bgr):
+    """Marker/scatter detection with legend+tick exclusion boxes."""
+    from marker_extractor import MarkerExtractor
+    dets = getattr(app, "_last_detections", {}) or {}
+    exclude = []
+    for cls in ("legend_area", "legend_patch", "legend_label", "legend_title",
+                "x_tick", "y_tick", "x_title", "y_title", "chart_title",
+                "value_label", "mark_label"):
+        for b in dets.get(cls) or []:
+            try:
+                exclude.append([float(v) for v in b[:4]])
+            except Exception:  # noqa: BLE001
+                continue
+    ext = MarkerExtractor(img_bgr, plot_area=app.cached_plot_area,
+                          exclude_boxes=exclude)
+    series, _meta = ext.extract()
+    out = []
+    for s in series or []:
+        pts = s.get("points", []) if isinstance(s, dict) else s
+        pts = [[float(p[0]), float(p[1])] for p in pts or [] if len(p) >= 2]
+        if pts:
+            out.append({"points": pts})
+    return out
 
 
 def batch_dir(pdf_path: str) -> str:
@@ -61,6 +101,18 @@ def digitize_figure(app, idx, img_bgr, meta) -> dict:
     except Exception:  # noqa: BLE001
         pass
 
+    assists = []
+    # sparse line tracing usually means a SCATTER chart — detect markers
+    n_traced = sum(len(s.get("points", [])) for s in series_px)
+    if axis_config and n_traced < 12:
+        try:
+            found = _scatter_series(app, img_bgr)
+            if found:
+                series_px = series_px + found
+                assists.append(f"scatter:{len(found)}")
+        except Exception as e:  # noqa: BLE001
+            print(f"      ⚠ scatter detection: {type(e).__name__}: {e}")
+
     names = [None] * len(series_px)
     try:
         import legend_mapper
@@ -70,6 +122,29 @@ def digitize_figure(app, idx, img_bgr, meta) -> dict:
             names = [n or None for n in named]
     except Exception:  # noqa: BLE001
         pass
+
+    # local-VLM fallbacks: axis names OCR missed, legends colors couldn't match
+    v = _vlm()
+    if v and axis_config and not (x_name and y_name):
+        try:
+            ax = v.read_axis_properties(img_bgr)
+            def _nm(a):
+                n = (a or {}).get("name") or ""
+                u = (a or {}).get("unit") or ""
+                return f"{n} ({u})" if n and u else n
+            x_name = x_name or _nm(ax.get("x_axis"))
+            y_name = y_name or _nm(ax.get("y_axis"))
+            assists.append("vlm-axes")
+        except Exception as e:  # noqa: BLE001
+            print(f"      ⚠ vlm axis names: {type(e).__name__}: {e}")
+    if v and axis_config and series_px and not any(names):
+        try:
+            labeled = v.label_lines_by_legend(img_bgr, series_px)
+            if labeled and any(labeled):
+                names = [l or n for l, n in zip(labeled, names)]
+                assists.append("vlm-labels")
+        except Exception as e:  # noqa: BLE001
+            print(f"      ⚠ vlm labels: {type(e).__name__}: {e}")
 
     series_data = []
     if axis_config:
@@ -91,6 +166,7 @@ def digitize_figure(app, idx, img_bgr, meta) -> dict:
         "series_names": [n or f"Line {i + 1}" for i, n in enumerate(names)],
         "axis_config": dict(axis_config) if axis_config else None,
         "calibrated": axis_config is not None,
+        "assists": assists,
         "auto": True,
     }
     return entry
