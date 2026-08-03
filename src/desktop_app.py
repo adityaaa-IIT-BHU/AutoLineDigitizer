@@ -2686,6 +2686,55 @@ def main(page: ft.Page):
     pdf_picker = ft.FilePicker(on_result=pick_pdf_result)
     page.overlay.append(pdf_picker)
 
+    def batch_pick_result(e: ft.FilePickerResultEvent):
+        """Batch digitize: run the full unattended pipeline (figures, curves,
+        axes, assists, local KMDS) on every picked PDF, using this app's
+        already-loaded models. Each PDF then opens pre-digitized for review."""
+        if not e.files:
+            return
+        paths = [f.path for f in e.files if f.path.lower().endswith(".pdf")]
+        if not paths:
+            return
+
+        def _work():
+            import types
+            import batch_run
+            args = types.SimpleNamespace(
+                model=model_dropdown.value or "general_v2",
+                detector="mineru", force=False, verbose=False,
+                no_kmds=False,
+                push=(app_settings.get_setting("sd3_url") or "").strip(),
+                push_key=(app_settings.get_setting("sd3_key") or "").strip())
+            done = 0
+            for i, pdf in enumerate(paths, 1):
+                process_status_text.value = (
+                    f"⚙ Batch {i}/{len(paths)}: {os.path.basename(pdf)} — "
+                    f"digitizing on this machine, KMDS on the local model…")
+                page.update()
+                try:
+                    r = batch_run.run_pdf(app, pdf, args)
+                    if r.get("digitized") or r.get("skipped"):
+                        done += 1
+                except Exception as ex:  # noqa: BLE001
+                    print(f"[batch] {pdf}: {type(ex).__name__}: {ex}")
+            process_status_text.value = (
+                f"✅ Batch done: {done}/{len(paths)} paper(s) digitized. "
+                f"Open any of them (Open PDF) — figures load pre-digitized "
+                f"for review, then upload the approved ones.")
+            page.update()
+
+        page.run_thread(_work)
+
+    batch_picker = ft.FilePicker(on_result=batch_pick_result)
+    page.overlay.append(batch_picker)
+    batch_btn = ft.OutlinedButton(
+        "Batch digitize…",
+        tooltip="Pick several PDFs — every figure is digitized and the KMDS "
+                "record extracted unattended (local models). Reopen each PDF "
+                "to review with the full toolbox, then upload.",
+        on_click=lambda _: batch_picker.pick_files(
+            allow_multiple=True, allowed_extensions=["pdf"]))
+
     def on_review_figures_click(_):
         if not (app.pdf_path and str(app.pdf_path).lower().endswith(".pdf")
                 and app._vlm_screener_available()):
@@ -4696,7 +4745,7 @@ def main(page: ft.Page):
 
     # One consistent pill silhouette across every action button; per-button
     # colors (e.g. the destructive Delete Line) are set at the constructor.
-    for _b in (upload_btn, open_pdf_btn, recrop_btn, delete_fig_btn, review_figures_btn, kmds_btn,
+    for _b in (upload_btn, open_pdf_btn, batch_btn, recrop_btn, delete_fig_btn, review_figures_btn, kmds_btn,
                save_fig_btn, open_record_btn, sd3_upload_btn, export_sd_btn, export_wpd_btn,
                verify_btn, detect_markers_btn, axis_fix_btn, label_lines_btn,
                erase_btn, add_btn, apply_btn, done_btn, export_csv_btn,
@@ -4815,7 +4864,7 @@ def main(page: ft.Page):
 
     toolbar_card = _card(
         ft.Column([
-            ft.Row([upload_btn, open_pdf_btn,
+            ft.Row([upload_btn, open_pdf_btn, batch_btn,
                     _vsep(),
                     pdf_detector_dropdown, review_figures_btn, recrop_btn, delete_fig_btn,
                     _vsep(),
