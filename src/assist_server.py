@@ -68,8 +68,12 @@ def _series_in(body):
 
 
 def _series_out(series):
-    return [[[float(p[0]), float(p[1])] for p in s.get("points", [])]
-            for s in series]
+    out = []
+    for s in series or []:
+        pts = s.get("points", []) if isinstance(s, dict) else s
+        out.append([[float(p[0]), float(p[1])] for p in pts or []
+                    if len(p) >= 2])
+    return out
 
 
 def op_axes(body):
