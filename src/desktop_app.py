@@ -5169,4 +5169,12 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    if os.environ.get("ALD_WEB"):
+        # Level 2: serve the whole app as a LAN web service (run on the GPU
+        # box: every browser session gets the full UI, models run on CUDA,
+        # closed-access PDFs never leave that machine).
+        #   ALD_WEB=1 [ALD_WEB_PORT=8550] python src/desktop_app.py
+        ft.app(target=main, view=None, host="0.0.0.0",
+               port=int(os.environ.get("ALD_WEB_PORT", "8550")))
+    else:
+        ft.app(target=main)
