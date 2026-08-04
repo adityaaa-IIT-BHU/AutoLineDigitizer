@@ -175,9 +175,30 @@ def digitize_figure(app, idx, img_bgr, meta) -> dict:
 def run_pdf(app, pdf_path: str, args) -> dict:
     out_dir = batch_dir(pdf_path)
     state_path = os.path.join(out_dir, "digitizations.json")
+    base0 = os.path.splitext(os.path.basename(pdf_path))[0]
+    kmds_json = os.path.join(os.path.dirname(os.path.abspath(pdf_path)),
+                             f"{base0}_kmds", f"{base0}.json")
     if os.path.exists(state_path) and not args.force:
-        print(f"  ↷ skip (state exists): {os.path.basename(pdf_path)}")
-        return {"pdf": pdf_path, "skipped": True}
+        # digitization done — but if KMDS failed last time (e.g. the GPU
+        # link dropped overnight), retry JUST the KMDS stage on resume
+        if args.no_kmds or os.path.exists(kmds_json):
+            print(f"  ↷ skip (complete): {os.path.basename(pdf_path)}")
+            return {"pdf": pdf_path, "skipped": True}
+        print(f"  ↻ digitization exists — retrying KMDS only")
+        try:
+            import kmds_parallel as kp
+            os.makedirs(os.path.dirname(kmds_json), exist_ok=True)
+            model = os.environ.get("KMDS_MODEL") or kp.default_model()
+            prompt = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "extraction_prompt.md")
+            summary = asyncio.run(kp.extract_kmds_parallel(
+                pdf_path, os.path.dirname(kmds_json), base_name=base0,
+                prompt_path=prompt, model=model, translate=False))
+            note = summary.get("_error") or "ok"
+        except Exception as e:  # noqa: BLE001
+            note = f"failed again: {type(e).__name__}: {e}"
+        print(f"  KMDS retry: {note}")
+        return {"pdf": pdf_path, "skipped": True, "kmds": note}
     os.makedirs(out_dir, exist_ok=True)
     t0 = time.time()
 

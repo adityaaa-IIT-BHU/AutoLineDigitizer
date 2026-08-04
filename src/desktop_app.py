@@ -1990,7 +1990,7 @@ def main(page: ft.Page):
                         f"(separate process — the app stays responsive)")
                     page.update()
                     r = subprocess.run(
-                        [sys.executable,
+                        ["/usr/bin/caffeinate", "-is", sys.executable,
                          os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                       "batch_run.py"),
                          pdf] + (["--push", app_settings.get_setting("sd3_url").strip(),
