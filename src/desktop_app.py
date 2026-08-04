@@ -2696,6 +2696,50 @@ def main(page: ft.Page):
         if not paths:
             return
 
+        # Closed-access safety: NEVER silently pick a backend — ask every
+        # time whether AI stages (KMDS + naming) run locally or on Claude.
+        def _choose(backend):
+            batch_dlg.open = False
+            page.update()
+            if backend == "local":
+                os.environ["ALD_LLM_BACKEND"] = "local"
+                os.environ["KMDS_MODEL"] = ("local:"
+                                            + kmds_parallel._local_text_model())
+            else:
+                os.environ["ALD_LLM_BACKEND"] = "anthropic"
+                os.environ.pop("KMDS_MODEL", None)
+            page.run_thread(_work)
+
+        from llm_backend import local_configured
+        can_local = local_configured()
+        can_claude = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        batch_dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Where should the AI stages run?"),
+            content=ft.Text(
+                f"{len(paths)} PDF(s) selected. Curve/axis digitization is "
+                f"always local. Choose the backend for KMDS extraction and "
+                f"AI naming:\n\n🔒 Local GPU — nothing leaves the lab "
+                f"(required for closed-access papers)\n☁️ Claude API — "
+                f"paper text and figures are sent to Anthropic"),
+            actions=[
+                ft.TextButton("🔒 Local GPU", disabled=not can_local,
+                              on_click=lambda _: _choose("local")),
+                ft.TextButton("☁️ Claude API", disabled=not can_claude,
+                              on_click=lambda _: _choose("claude")),
+                ft.TextButton("Cancel",
+                              on_click=lambda _: (_cancel_batch_dlg())),
+            ],
+        )
+
+        def _cancel_batch_dlg():
+            batch_dlg.open = False
+            page.update()
+
+        page.dialog = batch_dlg
+        batch_dlg.open = True
+        page.update()
+
         def _work():
             import types
             import batch_run
