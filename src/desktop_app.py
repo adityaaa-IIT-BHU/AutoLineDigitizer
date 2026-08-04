@@ -2708,6 +2708,21 @@ def main(page: ft.Page):
             else:
                 os.environ["ALD_LLM_BACKEND"] = "anthropic"
                 os.environ.pop("KMDS_MODEL", None)
+            # the choice is THE backend from now on: persist it (settings)
+            # and drop any assistant built on the previous backend so every
+            # ✦ tool (label lines, fix axes, verify, vocab) rebuilds on it
+            try:
+                app_settings.set_setting(
+                    "llm_backend",
+                    "local" if backend == "local" else "anthropic")
+            except Exception:  # noqa: BLE001
+                pass
+            app.vlm = None
+            process_status_text.value = (
+                "🔒 All AI tools now run on the LOCAL GPU."
+                if backend == "local"
+                else "☁️ AI tools now use the Claude API.")
+            page.update()
             page.run_thread(_work)
 
         from llm_backend import local_configured
