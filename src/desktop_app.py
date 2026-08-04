@@ -1978,38 +1978,30 @@ def main(page: ft.Page):
         page.update()
 
         def _work():
-            try:
-                from vlm_verifier import VLMVerifier
-                if app.vlm is None:
-                    app.vlm = VLMVerifier(verify_ssl=True)
-                res = app.vlm.read_axis_properties(app.current_image)
-
-                def fmt(ax):
-                    n = (ax.get("name") or "").strip()
-                    u = (ax.get("unit") or "").strip()
-                    return f"{n} ({u})" if n and u else n
-
-                xa = fmt(res.get("x_axis") or {})
-                ya = fmt(res.get("y_axis") or {})
-                if xa:
-                    x_axis_name_field.value = xa
-                    app.x_axis_name = xa
-                    app.x_axis_detected = xa
-                if ya:
-                    y_axis_name_field.value = ya
-                    app.y_axis_name = ya
-                    app.y_axis_detected = ya
-                note = (res.get("notes") or "").strip()
-                process_status_text.value = (
-                    f"✦ Claude read the axes: X = {xa or '?'} · Y = {ya or '?'}"
-                    + (f"  — {note}" if note else "")
-                    + "  (edit if wrong, then mark Axes OK)")
-                _update_kmds_pair()
-                update_data_table()
-                _grow_vocab_from_axes()
-            except Exception as ex:  # noqa: BLE001
-                process_status_text.value = f"Claude axis read failed: {ex}"
-            axis_claude_btn.disabled = False
+            # each paper runs in its OWN subprocess: the UI process never
+            # loads batch models, and a pipeline crash can't kill the app
+            import subprocess
+            log = os.path.join(os.path.expanduser("~"), ".autolinedigitizer_batch.log")
+            done = 0
+            with open(log, "a", encoding="utf-8") as lf:
+                for i, pdf in enumerate(paths, 1):
+                    process_status_text.value = (
+                        f"⚙ Batch {i}/{len(paths)}: {os.path.basename(pdf)} "
+                        f"(separate process — the app stays responsive)")
+                    page.update()
+                    r = subprocess.run(
+                        [sys.executable,
+                         os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "batch_run.py"),
+                         pdf] + (["--push", app_settings.get_setting("sd3_url").strip(),
+                                  "--push-key", app_settings.get_setting("sd3_key").strip()]
+                                 if (app_settings.get_setting("sd3_url") or "").strip() else []),
+                        stdout=lf, stderr=lf, env=os.environ.copy())
+                    if r.returncode == 0:
+                        done += 1
+            process_status_text.value = (
+                f"✅ Batch done: {done}/{len(paths)} paper(s). Open any of them "
+                f"— figures load pre-digitized. (log: ~/.autolinedigitizer_batch.log)")
             page.update()
 
         page.run_thread(_work)
