@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for kmds_editor (pure logic, no flet)."""
+"""Unit tests for ncmrd_editor (pure logic, no flet)."""
 import copy
 
-from kmds_editor import (flatten_record, leaf_to_text, text_to_leaf,
+from ncmrd_editor import (flatten_record, leaf_to_text, text_to_leaf,
                          apply_edit, apply_text_edits)
 
 RECORD = {

@@ -37,16 +37,16 @@ https://github.com/user-attachments/assets/7ecb641e-f939-40a5-ad7b-54b64937fdd4
   - axis **properties** (name + unit) are read from each figure automatically and are
     hand-editable, with a **✦ Ask Claude** button to re-read on demand
   - curves are **named from the legend** automatically (color/style matching fallback works offline)
-  - a per-axis **KMDS verification panel** shows: what the model detected → your edited
-    value → the live KMDS vocabulary match (official term ✓ · local extension ✓ · not-in-KMDS ⚠)
-- **KMDS records**: a `<paper>_kmds/` folder next to the PDF is loaded automatically;
+  - a per-axis **NCMRD verification panel** shows: what the model detected → your edited
+    value → the live NCMRD vocabulary match (official term ✓ · local extension ✓ · not-in-NCMRD ⚠)
+- **NCMRD records**: a `<paper>_ncmrd/` folder next to the PDF is loaded automatically;
   approved digitizations merge into the record (curator-verified axis names correct the
   record's graph terms, with provenance). Vocabulary extensions live in
-  `src/kmds_vocab_extensions.json` and **grow automatically**: a verified axis
-  property KMDS doesn't know is created as an extension term — Claude-canonicalized
+  `src/ncmrd_vocab_extensions.json` and **grow automatically**: a verified axis
+  property NCMRD doesn't know is created as an extension term — Claude-canonicalized
   when available, the curator's wording otherwise, provenance (`added_by`) tracked —
   and synced to Starrydata3 so app and server always agree.
-- **Uploads**: approved figures go to **Starrydata3** (your local KMDS database,
+- **Uploads**: approved figures go to **Starrydata3** (your local NCMRD database,
   [repo](https://github.com/adityaaa-IIT-BHU/starrydata3)) and/or **Starrydata2**
   (official internal API; token auth for unattended use — `tools/starrydata_upload.py`)
 - **Export Formats**:
@@ -117,7 +117,7 @@ If auto-download fails (e.g., due to a corporate proxy), you can download the mo
 ## Run from source — the full pipeline
 
 The packaged app above covers single-image digitization. The full research
-pipeline (PDF gallery, KMDS integration, Claude curation, Starrydata uploads,
+pipeline (PDF gallery, NCMRD integration, Claude curation, Starrydata uploads,
 and serving as [Starrydata3](https://github.com/adityaaa-IIT-BHU/starrydata3)'s
 digitization engine) runs from source. Everything — including the ML weights —
 lives and runs on your own machine.
@@ -147,7 +147,7 @@ Optional pieces:
 - **Claude curation** — put your Anthropic API key in the app's Settings (or
   `ANTHROPIC_API_KEY`); axis reading and legend naming then run automatically
   per figure.
-- **Starrydata3** (local KMDS database + web UI) — install
+- **Starrydata3** (local NCMRD database + web UI) — install
   [starrydata3](https://github.com/adityaaa-IIT-BHU/starrydata3) (plain venv, no
   ML deps), then use the app's *Upload approved → Starrydata3* button.
 - **Starrydata2 uploads** — save your api-token to `~/.sd2_token` (chmod 600);

@@ -187,7 +187,8 @@ pp_doclayoutv2_weights/
 # Run outputs
 batch_input/
 batch_output*/
-nature07853_kmds/
+*_ncmrd/
+*_kmds/
 te_marker_*/
 demo/
 

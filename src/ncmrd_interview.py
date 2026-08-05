@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-kmds_interview.py — "ask questions → compile to KMDS" extraction prototype.
+ncmrd_interview.py — "ask questions → compile to NCMRD" extraction prototype.
 
 Stage A (interview): ONE small LLM call. The model gets the paper markdown +
 figure crops and a compact question form (~2k tokens) — plain questions in
-plain shapes, the paper's own words and units. No KMDS keys, no catalogs, no
-schema fragments: the ~1.4MB KMDS schema never enters the prompt.
+plain shapes, the paper's own words and units. No NCMRD keys, no catalogs, no
+schema fragments: the ~1.4MB NCMRD schema never enters the prompt.
 
-Stage B (compile): deterministic code builds the full KMDS record from the
+Stage B (compile): deterministic code builds the full NCMRD record from the
 answers — assigns s-NNN/f-NNN/g-NNN/material_NN ids, wires every
 cross-reference from the interview's explicit mentions, resolves property /
 process / measurement names against indexes built from the schema itself,
@@ -15,7 +15,7 @@ and only ever emits keys that exist in the schema. jsonschema validation +
 repair_record stay as the final gate.
 
 NOT wired into the desktop app — prototype entry point is
-extract_kmds_interview(). The production pipeline stays kmds_parallel.
+extract_ncmrd_interview(). The production pipeline stays ncmrd_parallel.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from kmds_parallel import (MODEL, LIGHT_MODEL, ANTHROPIC_AVAILABLE,
+from ncmrd_parallel import (MODEL, LIGHT_MODEL, ANTHROPIC_AVAILABLE,
                            _mineru_paper_markdown, _parse_json_block, _usage,
                            _build_property_ref_index, repair_record,
                            fill_axis_refs)
@@ -265,7 +265,7 @@ def _axis(kind: str, ax: Optional[Dict]) -> Dict[str, Any]:
 
 def compile_interview(iv: Dict[str, Any], schema: Dict[str, Any]
                       ) -> Tuple[Dict[str, Any], List[str]]:
-    """Deterministically build a full KMDS record from interview answers."""
+    """Deterministically build a full NCMRD record from interview answers."""
     log: List[str] = []
     prop_paths = _property_paths(schema)
     proc_idx = _catalog_index(schema, "process")
@@ -281,7 +281,7 @@ def compile_interview(iv: Dict[str, Any], schema: Dict[str, Any]
         for m in s.get("made_of") or []:
             mid_to_sids.setdefault(m, []).append(sids[s.get("sid")])
 
-    def sample_refs(lst):  # interview sids/mids -> KMDS sample ids
+    def sample_refs(lst):  # interview sids/mids -> NCMRD sample ids
         out, dropped = [], []
         for x in lst or []:
             if x in sids:
@@ -415,7 +415,7 @@ def compile_interview(iv: Dict[str, Any], schema: Dict[str, Any]
     }
 
     for s in iv.get("samples") or []:
-        refs = [{"scheme": "KMDS material", "id": mids[m]}
+        refs = [{"scheme": "NCMRD material", "id": mids[m]}
                 for m in (s.get("made_of") or []) if m in mids]
         publication["samples"].append({
             "sample local id": sids[s.get("sid")],
@@ -424,7 +424,7 @@ def compile_interview(iv: Dict[str, Any], schema: Dict[str, Any]
             "mixing type": s.get("mixing_type"),
             "components": [{"name": mid_name.get(m, s.get("label")),
                             "role": s.get("role"),
-                            "references": [{"scheme": "KMDS material", "id": mids[m]}]}
+                            "references": [{"scheme": "NCMRD material", "id": mids[m]}]}
                            for m in (s.get("made_of") or []) if m in mids] or
                           [{"name": s.get("label"), "role": s.get("role"),
                             "references": refs}],
@@ -503,7 +503,7 @@ def compile_interview(iv: Dict[str, Any], schema: Dict[str, Any]
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-async def extract_kmds_interview(pdf_path: str, output_dir: str,
+async def extract_ncmrd_interview(pdf_path: str, output_dir: str,
                                  base_name: Optional[str] = None,
                                  model: str = LIGHT_MODEL,
                                  schema_path: Optional[str] = None) -> Dict[str, Any]:
@@ -516,7 +516,7 @@ async def extract_kmds_interview(pdf_path: str, output_dir: str,
         base_name = os.path.splitext(os.path.basename(pdf_path))[0]
     if schema_path is None:
         schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                   "kmds_v15.2.4_nullable.json")
+                                   "ncmrd_v15.2.4_nullable.json")
     with open(schema_path, "r", encoding="utf-8") as f:
         schema = json.load(f)
 
@@ -560,7 +560,7 @@ async def extract_kmds_interview(pdf_path: str, output_dir: str,
     with open(en_path, "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2, ensure_ascii=False)
     elapsed = time.time() - t0
-    print(f"   ✅ compiled KMDS record: {en_path}")
+    print(f"   ✅ compiled NCMRD record: {en_path}")
     print(f"   schema violations: {n_violations}   |   {elapsed:.1f}s total   |   "
           f"in={res['input_tokens']} cache_w={res['cache_creation_tokens']} "
           f"cache_r={res['cache_read_tokens']} out={res['output_tokens']} tok")
@@ -573,4 +573,4 @@ async def extract_kmds_interview(pdf_path: str, output_dir: str,
 
 if __name__ == "__main__":
     import sys
-    asyncio.run(extract_kmds_interview(sys.argv[1], sys.argv[2]))
+    asyncio.run(extract_ncmrd_interview(sys.argv[1], sys.argv[2]))

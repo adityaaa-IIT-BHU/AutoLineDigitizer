@@ -216,7 +216,7 @@ class VLMVerifier:
 
     def canonicalize_properties(self, labels, model=None):
         """
-        Turn axis labels that are NOT in the KMDS vocabulary into proposed
+        Turn axis labels that are NOT in the NCMRD vocabulary into proposed
         vocabulary entries, so the vocabulary can grow as new properties are
         encountered. Text-only call (no image).
 
@@ -229,7 +229,7 @@ class VLMVerifier:
         listing = "\n".join(f"  {i}: {lb!r}" for i, lb in enumerate(labels))
         prompt = (
             "These chart-axis labels did not match any term in a materials-science "
-            "property vocabulary (KMDS). For EACH label decide whether it names a "
+            "property vocabulary (NCMRD). For EACH label decide whether it names a "
             "real measurable physical property.\n\n"
             f"Labels:\n{listing}\n\n"
             "For each, report:\n"

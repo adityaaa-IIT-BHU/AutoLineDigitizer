@@ -4,10 +4,13 @@ starrydata_upload.py — push AutoLineDigitizer digitizations into Starrydata
 using Starrydata2's OFFICIAL internal API (Tomoya Mato, starrydata_internal_api.yaml),
 reusing YOUR interactive login (no passwords in this code).
 
-Write path (official endpoints, app mounted at /starrydata2):
-  POST /paper/uploadpaper/{listname}/   {doi, projectname}   -> upsert paper, get pk
-  GET  /paper/getpaperlist/{listname}/  ?projectname=        -> resolve DOI -> pk (fallback)
-  POST /paper/postdata/{pk}/{project}/                       -> create/update figure+sample+points
+Write path (app mounted at /starrydata2; the 2026-07 staging frontend rewrite
+moved the API from /paper/ to /paperlist/ and routes take NO trailing slash —
+verified live 2026-07-30 against staging):
+  GET  /paperlist/getpaperlist/{listname}  ?projectname=&pagelimit=&page=   -> paper rows
+  POST /paperlist/postdata/{pk}/{project}  same form fields as ever         -> figure+sample+points
+  POST /paperlist/uploadpaper/{listname}   {doi, projectname}  -> UNVERIFIED on the new
+       frontend; paper registration in the UI is the AddPaper dialog, endpoint TBD.
       property_x, property_y, unit_x, unit_y, xmulti, ymulti,
       caption, fignum (upsert key), samplename, composition, comments(JSON),
       xydata("x, y\\n..."). Units are validated against SI dimension server-side.
@@ -36,7 +39,7 @@ SESSION AUTH (fallback when no token is available):
 
 DRY-RUN prints every request it WOULD send and writes nothing.
 
-Export JSON shape (also produced by build_export_from_kmds()):
+Export JSON shape (also produced by build_export_from_ncmrd()):
 {
   "doi": "10.1021/...",
   "project": "GeneralDB",
@@ -77,6 +80,74 @@ NIMS_PROXIES = ([os.environ["SD2_PROXY"]] if os.environ.get("SD2_PROXY") else []
 ]
 
 
+def nims_bind_ip() -> Optional[str]:
+    """IP of a local interface on the NIMS network (144.213.0.0/16), if any.
+    On a dual-network Mac (Wi-Fi + NIMS LAN cable) the default route usually
+    prefers Wi-Fi, so SD2 traffic must be explicitly bound to the NIMS
+    interface or the server/proxy is unreachable. Override with $SD2_BIND_IP."""
+    ip = os.environ.get("SD2_BIND_IP", "").strip()
+    if ip:
+        return ip
+    try:
+        import re
+        import subprocess
+        out = subprocess.run(["ifconfig"], capture_output=True, text=True).stdout
+        m = re.search(r"inet (144\.213\.\d+\.\d+)", out)
+        return m.group(1) if m else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def start_bound_forwarder(bind_ip: str, upstream_host: str, upstream_port: int) -> int:
+    """Tiny local TCP forwarder: listen on 127.0.0.1:<returned port>, relay each
+    connection to the NIMS proxy with the outbound socket BOUND to bind_ip.
+    Lets the Playwright browser (which cannot bind an interface) reach the
+    proxy on a dual-network Mac. Daemon threads; dies with the process."""
+    import socket
+    import threading
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(50)
+    port = srv.getsockname()[1]
+
+    def pump(a, b):
+        try:
+            while True:
+                d = a.recv(65536)
+                if not d:
+                    break
+                b.sendall(d)
+        except OSError:
+            pass
+        finally:
+            for sock in (a, b):
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    def serve():
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            try:
+                u = socket.socket()
+                u.bind((bind_ip, 0))
+                u.settimeout(30)
+                u.connect((upstream_host, upstream_port))
+                u.settimeout(None)
+            except OSError:
+                c.close()
+                continue
+            threading.Thread(target=pump, args=(c, u), daemon=True).start()
+            threading.Thread(target=pump, args=(u, c), daemon=True).start()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return port
+
+
 def load_token(explicit: Optional[str] = None) -> Optional[str]:
     if explicit and explicit.strip():
         return explicit.strip()
@@ -102,7 +173,7 @@ _UNIT_TEX = [
 
 
 def sanitize_unit(unit: Optional[str]) -> str:
-    """KMDS units carry LaTeX (e.g. '^{\\circ}C', 'W (m K)^{-1}') that
+    """NCMRD units carry LaTeX (e.g. '^{\\circ}C', 'W (m K)^{-1}') that
     Starrydata rejects. Convert to plain-text units: degree/Greek symbols,
     '^{-1}' -> '^-1', drop braces and stray backslashes."""
     import re
@@ -113,6 +184,10 @@ def sanitize_unit(unit: Optional[str]) -> str:
     u = re.sub(r"_\{([^}]*)\}", r"_\1", u)     # _{...} -> _...
     u = u.replace("{", "").replace("}", "").replace("\\", "")
     u = re.sub(r"\s+", " ", u).strip()
+    # Keep the micro prefix attached to its unit: NCMRD writes '\mu W', which
+    # becomes 'µ W' — the server's unit parser reads a lone µ as micron
+    # (length), rejecting e.g. 'µ W m^-1 K^-2'. 'µW' parses as microwatt.
+    u = re.sub(r"[µμ] (?=[A-Za-zΩ])", "µ", u)
     return u or "-"
 
 
@@ -153,6 +228,27 @@ class StarrydataClient:
     def _url(self, path: str) -> str:
         return self.base + self.prefix + path
 
+    def _browser_proxy(self) -> Optional[Dict[str, str]]:
+        """Proxy settings for the Playwright browser. Web traffic to the SD2
+        servers must go through the NIMS proxy, which on a dual-network Mac is
+        only reachable from the NIMS interface — an interface a browser cannot
+        bind. Relay through a local bound forwarder instead."""
+        bind = nims_bind_ip()
+        if not bind:
+            return None
+        host, port = None, 8888
+        for cand in NIMS_PROXIES:
+            u = urllib.parse.urlparse(cand)
+            host, port = u.hostname, u.port or 8888
+            if host and host.replace(".", "").isdigit():
+                break     # prefer the IP: the hostname may not resolve off NIMS DNS
+        if not host:
+            return None
+        lp = start_bound_forwarder(bind, host, port)
+        print(f"  · NIMS proxy via local forwarder 127.0.0.1:{lp} -> {host}:{port} "
+              f"(bound to {bind})", flush=True)
+        return {"server": f"http://127.0.0.1:{lp}"}
+
     # -- session -------------------------------------------------------------
     def login(self, timeout_s: int = 420, force: bool = False):
         """Establish an authenticated session, reusing a cached one so a person
@@ -166,10 +262,11 @@ class StarrydataClient:
         force=True skips the cache and always logs in fresh."""
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
+        pxy = self._browser_proxy()
 
         # 1) try the cached session, headlessly — no window if it still works.
         if not force and self.session_file and os.path.exists(self.session_file):
-            self._browser = self._pw.chromium.launch(headless=True)
+            self._browser = self._pw.chromium.launch(headless=True, proxy=pxy)
             self._ctx = self._browser.new_context(storage_state=self.session_file)
             self._page = self._ctx.new_page()
             if self._session_valid():
@@ -181,7 +278,7 @@ class StarrydataClient:
             self._teardown_browser()
 
         # 2) interactive login in a visible window, then cache it.
-        self._browser = self._pw.chromium.launch(headless=False)
+        self._browser = self._pw.chromium.launch(headless=False, proxy=pxy)
         self._ctx = self._browser.new_context()
         self._page = self._ctx.new_page()
         self._page.goto(self.base + self.prefix + "/", wait_until="domcontentloaded")
@@ -301,9 +398,9 @@ class StarrydataClient:
         return its ObjectID (pk). Matches the exact DOI in the returned list;
         never guesses the first row."""
         if self.dry_run:
-            print(f"\n[DRY-RUN] register paper {doi} via /paper/uploadpaper/{listname}/")
+            print(f"\n[DRY-RUN] register paper {doi} via /paperlist/uploadpaper/{listname}")
             return "<paper_pk:dry-run>"
-        data = self._post(f"/paper/uploadpaper/{listname}/",
+        data = self._post(f"/paperlist/uploadpaper/{listname}",
                           {"doi": doi.strip(), "projectname": self.project})
         pk = self._pk_from_rows(data, doi)
         if pk:
@@ -316,7 +413,7 @@ class StarrydataClient:
         """GET /paper/getpaperlist/{listname}/ and match the exact DOI -> pk."""
         want = doi.strip().lower()
         for page in range(1, 40):
-            rows = self._get(f"/paper/getpaperlist/{listname}/",
+            rows = self._get(f"/paperlist/getpaperlist/{listname}",
                              {"projectname": self.project, "pagelimit": "50", "page": str(page)})
             if not isinstance(rows, list) or not rows:
                 break
@@ -342,7 +439,7 @@ class StarrydataClient:
         out = []
         for curve in fig.get("curves") or []:
             form = build_postdata_form(fig, curve)
-            out.append(self._post(f"/paper/postdata/{pk}/{self.project}/", form))
+            out.append(self._post(f"/paperlist/postdata/{pk}/{self.project}", form))
         return out
 
     def upload_export(self, export: Dict[str, Any],
@@ -401,13 +498,29 @@ class TokenClient(StarrydataClient):
         self.s.headers.update({"Authorization": f"Token {token}",
                                "X-Requested-With": "XMLHttpRequest"})
         self._via_proxy = False
+        bind = nims_bind_ip()
+        if bind:
+            from requests.adapters import HTTPAdapter
+
+            class _Bound(HTTPAdapter):
+                def init_poolmanager(self, *a, **kw):
+                    kw["source_address"] = (bind, 0)
+                    return super().init_poolmanager(*a, **kw)
+
+                def proxy_manager_for(self, proxy, **kw):
+                    kw["source_address"] = (bind, 0)
+                    return super().proxy_manager_for(proxy, **kw)
+
+            self.s.mount("https://", _Bound())
+            self.s.mount("http://", _Bound())
+            print(f"  · binding SD2 traffic to NIMS interface {bind}", flush=True)
 
     # -- session interface kept for drop-in use ------------------------------
     def login(self, timeout_s: int = 0, force: bool = False) -> bool:
         """No login with token auth — just probe that the token + network work."""
         import requests
         try:
-            rows = self._get("/paper/getpaperlist/all/",
+            rows = self._get("/paperlist/getpaperlist/all",
                              {"projectname": self.project, "pagelimit": "1", "page": "1"})
         except requests.exceptions.RequestException as ex:
             print(f"  ✗ cannot reach {self.base} (directly or via the NIMS proxy).\n"
@@ -532,7 +645,7 @@ def _containment(dig: tuple, donor: Optional[tuple]) -> float:
 
 
 def _collect_donors(pub: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """KMDS graphs that carry real axis identity + a value range — the sources
+    """NCMRD graphs that carry real axis identity + a value range — the sources
     a digitized curve can inherit property names, units, and samples from."""
     donors = []
     for fg in pub.get("figures") or []:
@@ -567,12 +680,12 @@ def _match_donor(xr: tuple, yr: tuple, n_series: int,
     return best
 
 
-def build_export_from_kmds(record: Dict[str, Any],
+def build_export_from_ncmrd(record: Dict[str, Any],
                            project: str = DEFAULT_PROJECT) -> Dict[str, Any]:
-    """Convert a merged KMDS paper record (window.__STUDIO_RECORD from
-    paper_record_view.html — KMDS metadata + digitization_data) into an upload
+    """Convert a merged NCMRD paper record (window.__STUDIO_RECORD from
+    paper_record_view.html — NCMRD metadata + digitization_data) into an upload
     export. Only graphs with REAL axis property names (not placeholder X/Y) and
-    digitized points are included; each series is mapped to its linked KMDS
+    digitized points are included; each series is mapped to its linked NCMRD
     sample when the counts line up, else to its line label. Returns the export
     plus a 'skipped' list explaining what was left out and why."""
     pub = (record.get("metadata") or {}).get("publication") or {}
@@ -606,14 +719,14 @@ def build_export_from_kmds(record: Dict[str, Any],
             yr = (min(p[1] for p in pts_all), max(p[1] for p in pts_all))
 
             # The graph's own axes are placeholders -> try to INHERIT identity
-            # from a KMDS donor graph by matching the digitized value ranges.
+            # from a NCMRD donor graph by matching the digitized value ranges.
             linked = g.get("samples") or []
             matched = None
             if _placeholder_axis(xterm) or _placeholder_axis(yterm):
                 matched = _match_donor(xr, yr, len(series), donors)
                 if matched is None:
                     skipped.append({"graph": gid, "reason":
-                        "axes are X/Y and no KMDS graph matches the data range "
+                        "axes are X/Y and no NCMRD graph matches the data range "
                         "(likely digitized without axis calibration — points are "
                         "in pixel space). Recalibrate axes to upload."})
                     continue

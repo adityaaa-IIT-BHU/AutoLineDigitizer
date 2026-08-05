@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-kmds_vocab.py — the KMDS property vocabulary, for showing the curator what a
-digitized figure IS in KMDS terms ("temperature vs electrical conductivity")
+ncmrd_vocab.py — the NCMRD property vocabulary, for showing the curator what a
+digitized figure IS in NCMRD terms ("temperature vs electrical conductivity")
 before anything is uploaded.
 
 Mirrors Starrydata3's vocabulary walk and property matching (starrydata3/
 manage.py + app.py) so the app's preview and the server's ingest agree. Only
 honest matches: a name that isn't in the vocabulary returns None and the UI
-shows it as non-KMDS — nothing is self-mapped to look conformant.
+shows it as non-NCMRD — nothing is self-mapped to look conformant.
 """
 import json
 import os
@@ -17,7 +17,7 @@ from typing import Dict, Optional, Tuple
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCHEMA_PATH = os.environ.get(
-    "KMDS_SCHEMA", os.path.join(SCRIPT_DIR, "kmds_v15.2.4_nullable.json"))
+    "NCMRD_SCHEMA", os.path.join(SCRIPT_DIR, "ncmrd_v15.2.4_nullable.json"))
 
 _WRAPPER_KEYS = {"value", "unit", "uncertainty", "measurement"}
 
@@ -32,7 +32,7 @@ _SYNONYMS = {
     "dielectric loss": "loss tangent", "loss factor": "loss tangent",
     "tan delta": "loss tangent", "dissipation factor": "loss tangent",
     "t g": "glass transition temperature", "tg": "glass transition temperature",
-    # battery axis wordings -> extension terms (see kmds_vocab_extensions.json)
+    # battery axis wordings -> extension terms (see ncmrd_vocab_extensions.json)
     "amphrs": "capacity", "amp hrs": "capacity", "amp hours": "capacity",
     "ah": "capacity", "mah": "capacity", "amp hr": "capacity",
     "volts": "voltage", "volt": "voltage", "cell voltage": "voltage", "discharge capacity": "capacity",
@@ -48,7 +48,7 @@ def _norm(s: str) -> str:
 
 
 def _vocab_triples(schema_path):
-    """(name, category, unit) triples from the KMDS materials property tree."""
+    """(name, category, unit) triples from the NCMRD materials property tree."""
     with open(schema_path, encoding="utf-8") as f:
         schema = json.load(f)
     try:
@@ -87,15 +87,15 @@ def _vocab_triples(schema_path):
     return uniq
 
 
-EXTENSIONS_PATH = os.path.join(SCRIPT_DIR, "kmds_vocab_extensions.json")
+EXTENSIONS_PATH = os.path.join(SCRIPT_DIR, "ncmrd_vocab_extensions.json")
 
 
 @lru_cache(maxsize=1)
 def _tables() -> Tuple[Dict[str, str], Dict[str, str], set]:
     """(normalized name -> canonical term, canonical term -> unit,
     extension term names). Extensions are locally-defined terms the official
-    KMDS schema lacks (see kmds_vocab_extensions.json) — matched like any
-    vocabulary term but reported as extensions, never as official KMDS."""
+    NCMRD schema lacks (see ncmrd_vocab_extensions.json) — matched like any
+    vocabulary term but reported as extensions, never as official NCMRD."""
     norm_map, units, ext = {}, {}, set()
     try:
         for name, _cat, unit in _vocab_triples(SCHEMA_PATH):
@@ -126,7 +126,7 @@ def is_extension(term: str) -> bool:
 
 
 def add_extensions(entries) -> list:
-    """Append new extension terms to kmds_vocab_extensions.json (deduped
+    """Append new extension terms to ncmrd_vocab_extensions.json (deduped
     against the whole vocabulary) and reload. Entries: [{name, category,
     unit, ...}]. Extra keys (e.g. added_by) are kept for provenance.
     Returns the names actually added."""
@@ -158,7 +158,7 @@ def add_extensions(entries) -> list:
 
 
 def match(name: str) -> Optional[str]:
-    """Axis/OCR property name -> canonical KMDS term, or None if not a KMDS
+    """Axis/OCR property name -> canonical NCMRD term, or None if not a NCMRD
     property. A trailing '(unit)' is split off and used only to disambiguate
     single-letter symbols ('T (K)' -> temperature). Same rules as Starrydata3's
     ingest: exact normalized match, hand synonym, unique substring hit."""
@@ -191,7 +191,7 @@ _UNIT_TEX = [(r"\^\{\\circ\}\s*C", "°C"), (r"\\circ", "°"), (r"\\Omega", "Ω")
 
 
 def unit_of(term: str) -> str:
-    """The property's canonical KMDS unit, LaTeX cleaned for display."""
+    """The property's canonical NCMRD unit, LaTeX cleaned for display."""
     u = _tables()[1].get(term, "") or ""
     if u.lower() in ("none", "-"):
         return ""

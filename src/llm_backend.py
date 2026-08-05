@@ -20,7 +20,7 @@ Configuration (settings.json via app_settings; the env var always wins):
 
 Callers hand over Anthropic-style content blocks (text / base64 image);
 the local path converts them to the OpenAI chat format. PDF "document"
-blocks have no local equivalent — the local KMDS path feeds MinerU
+blocks have no local equivalent — the local NCMRD path feeds MinerU
 markdown instead of raw PDFs.
 """
 import json

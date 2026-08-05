@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Flatten a KMDS record into editable leaf fields and apply edits back.
+"""Flatten a NCMRD record into editable leaf fields and apply edits back.
 
-The KMDS paper record is a deeply nested JSON document (~400 scalar leaves).
+The NCMRD paper record is a deeply nested JSON document (~400 scalar leaves).
 The desktop app renders each leaf as an editable text field; this module owns
 the pure logic — flattening the record into (path, label, value) rows and
 parsing edited text back with the original type respected — so it can be

@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 jsonschema = pytest.importorskip("jsonschema")
 
-from kmds_parallel import repair_record, validate_record, fill_axis_refs  # noqa: E402
+from ncmrd_parallel import repair_record, validate_record, fill_axis_refs  # noqa: E402
 
 
 SCHEMA = {

@@ -34,7 +34,7 @@ dependencies = [
     "matplotlib",
     "pycocotools",
     "PyMuPDF",       # `fitz` — PDF figure extraction (pdf_figures, batch_extract)
-    "anthropic",     # VLM extraction/verification (vlm_*, kmds_parallel, extract_paper)
+    "anthropic",     # VLM extraction/verification (vlm_*, ncmrd_parallel, extract_paper)
 ]
 
 [project.optional-dependencies]
@@ -68,7 +68,7 @@ py-modules = [
     "desktop_app",
     "evaluate",
     "extract_paper",
-    "kmds_parallel",
+    "ncmrd_parallel",
     "line_marker_detector",
     "marker_extractor",
     "pdf_figures",
@@ -82,7 +82,7 @@ py-modules = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Runtime data files (extraction_prompt.md, kmds_*.json, manifest.json) live
+# Runtime data files (extraction_prompt.md, ncmrd_*.json, manifest.json) live
 # top-level in src/ and are loaded relative to each module's __file__. They are
 # NOT declared as package-data because, with this flat module layout, there is
 # no package to attach them to — package-data only applies to packages. An

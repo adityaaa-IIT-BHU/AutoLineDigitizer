@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-batch_run.py — unattended batch digitization + local KMDS for a folder of
+batch_run.py — unattended batch digitization + local NCMRD for a folder of
 PDFs, producing review-ready state for the AutoLineDigitizer editor.
 
-    python src/batch_run.py papers/ [--model general_v2] [--no-kmds]
+    python src/batch_run.py papers/ [--model general_v2] [--no-ncmrd]
                                     [--limit N] [--detector mineru]
 
 Per PDF it:
@@ -12,7 +12,7 @@ Per PDF it:
   2. digitizes every figure headless: axis calibration (ChartDete + smart
      axis extractor), LineFormer curve tracing, axis titles, legend→curve
      names,
-  3. runs the local KMDS extraction (unless --no-kmds / unavailable),
+  3. runs the local NCMRD extraction (unless --no-ncmrd / unavailable),
   4. saves {pdf_dir}/{stem}_batch/digitizations.json — pixel-space series +
      axis config per figure, the exact state the app needs to reopen every
      figure fully EDITABLE (points, axes, all AI tools) for curator review.
@@ -176,29 +176,34 @@ def run_pdf(app, pdf_path: str, args) -> dict:
     out_dir = batch_dir(pdf_path)
     state_path = os.path.join(out_dir, "digitizations.json")
     base0 = os.path.splitext(os.path.basename(pdf_path))[0]
-    kmds_json = os.path.join(os.path.dirname(os.path.abspath(pdf_path)),
-                             f"{base0}_kmds", f"{base0}.json")
+    ncmrd_json = os.path.join(os.path.dirname(os.path.abspath(pdf_path)),
+                             f"{base0}_ncmrd", f"{base0}.json")
+    if not os.path.exists(ncmrd_json):
+        legacy = os.path.join(os.path.dirname(os.path.abspath(pdf_path)),
+                              f"{base0}_kmds", f"{base0}.json")
+        if os.path.exists(legacy):    # pre-rename batch output
+            ncmrd_json = legacy
     if os.path.exists(state_path) and not args.force:
-        # digitization done — but if KMDS failed last time (e.g. the GPU
-        # link dropped overnight), retry JUST the KMDS stage on resume
-        if args.no_kmds or os.path.exists(kmds_json):
+        # digitization done — but if NCMRD failed last time (e.g. the GPU
+        # link dropped overnight), retry JUST the NCMRD stage on resume
+        if args.no_ncmrd or os.path.exists(ncmrd_json):
             print(f"  ↷ skip (complete): {os.path.basename(pdf_path)}")
             return {"pdf": pdf_path, "skipped": True}
-        print(f"  ↻ digitization exists — retrying KMDS only")
+        print(f"  ↻ digitization exists — retrying NCMRD only")
         try:
-            import kmds_parallel as kp
-            os.makedirs(os.path.dirname(kmds_json), exist_ok=True)
-            model = os.environ.get("KMDS_MODEL") or kp.default_model()
+            import ncmrd_parallel as kp
+            os.makedirs(os.path.dirname(ncmrd_json), exist_ok=True)
+            model = (os.environ.get("NCMRD_MODEL") or os.environ.get("KMDS_MODEL")) or kp.default_model()
             prompt = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "extraction_prompt.md")
-            summary = asyncio.run(kp.extract_kmds_parallel(
-                pdf_path, os.path.dirname(kmds_json), base_name=base0,
+            summary = asyncio.run(kp.extract_ncmrd_parallel(
+                pdf_path, os.path.dirname(ncmrd_json), base_name=base0,
                 prompt_path=prompt, model=model, translate=False))
             note = summary.get("_error") or "ok"
         except Exception as e:  # noqa: BLE001
             note = f"failed again: {type(e).__name__}: {e}"
-        print(f"  KMDS retry: {note}")
-        return {"pdf": pdf_path, "skipped": True, "kmds": note}
+        print(f"  NCMRD retry: {note}")
+        return {"pdf": pdf_path, "skipped": True, "ncmrd": note}
     os.makedirs(out_dir, exist_ok=True)
     t0 = time.time()
 
@@ -229,29 +234,29 @@ def run_pdf(app, pdf_path: str, args) -> dict:
         json.dump(state, f, ensure_ascii=False)
     print(f"  ✓ digitization state -> {state_path}")
 
-    kmds_note = "skipped"
-    if not args.no_kmds:
+    ncmrd_note = "skipped"
+    if not args.no_ncmrd:
         try:
-            import kmds_parallel as kp
-            model = os.environ.get("KMDS_MODEL") or kp.default_model()
+            import ncmrd_parallel as kp
+            model = (os.environ.get("NCMRD_MODEL") or os.environ.get("KMDS_MODEL")) or kp.default_model()
             base = os.path.splitext(os.path.basename(pdf_path))[0]
-            kmds_out = os.path.join(os.path.dirname(os.path.abspath(pdf_path)),
-                                    f"{base}_kmds")
-            os.makedirs(kmds_out, exist_ok=True)
+            ncmrd_out = os.path.join(os.path.dirname(os.path.abspath(pdf_path)),
+                                    f"{base}_ncmrd")
+            os.makedirs(ncmrd_out, exist_ok=True)
             prompt = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "extraction_prompt.md")
-            print(f"  ⤷ KMDS ({model})...")
-            summary = asyncio.run(kp.extract_kmds_parallel(
-                pdf_path, kmds_out, base_name=base, prompt_path=prompt,
+            print(f"  ⤷ NCMRD ({model})...")
+            summary = asyncio.run(kp.extract_ncmrd_parallel(
+                pdf_path, ncmrd_out, base_name=base, prompt_path=prompt,
                 model=model, translate=False))
-            kmds_note = (summary.get("_error")
+            ncmrd_note = (summary.get("_error")
                          or f"{summary.get('n_sections_ok')}/"
                             f"{summary.get('n_sections')} sections, "
                             f"{summary.get('n_schema_violations')} violations")
-            print(f"  ✓ KMDS: {kmds_note}")
+            print(f"  ✓ NCMRD: {ncmrd_note}")
         except Exception as e:  # noqa: BLE001
-            kmds_note = f"failed: {type(e).__name__}: {e}"
-            print(f"  ✗ KMDS: {kmds_note}")
+            ncmrd_note = f"failed: {type(e).__name__}: {e}"
+            print(f"  ✗ NCMRD: {ncmrd_note}")
 
     if args.push:
         try:
@@ -262,7 +267,7 @@ def run_pdf(app, pdf_path: str, args) -> dict:
 
     return {"pdf": pdf_path, "figures": len(figs),
             "digitized": len(figures), "points": n_pts,
-            "kmds": kmds_note, "elapsed_sec": round(time.time() - t0, 1)}
+            "ncmrd": ncmrd_note, "elapsed_sec": round(time.time() - t0, 1)}
 
 
 def _push_session(pdf_path, state, figs, args):
@@ -272,11 +277,16 @@ def _push_session(pdf_path, state, figs, args):
     import cv2
     import httpx
     base = os.path.splitext(os.path.basename(pdf_path))[0]
-    kmds_json = os.path.join(os.path.dirname(os.path.abspath(pdf_path)),
-                             f"{base}_kmds", f"{base}.json")
+    ncmrd_json = os.path.join(os.path.dirname(os.path.abspath(pdf_path)),
+                             f"{base}_ncmrd", f"{base}.json")
+    if not os.path.exists(ncmrd_json):
+        legacy = os.path.join(os.path.dirname(os.path.abspath(pdf_path)),
+                              f"{base}_kmds", f"{base}.json")
+        if os.path.exists(legacy):    # pre-rename batch output
+            ncmrd_json = legacy
     record = {}
-    if os.path.exists(kmds_json):
-        with open(kmds_json, encoding="utf-8") as f:
+    if os.path.exists(ncmrd_json):
+        with open(ncmrd_json, encoding="utf-8") as f:
             record = json.load(f)
     figures = []
     for k, entry in (state.get("figures") or {}).items():
@@ -304,7 +314,7 @@ def main():
     p.add_argument("--detector", default="mineru",
                    choices=["mineru", "doclayout", "raster"])
     p.add_argument("--limit", type=int, default=0)
-    p.add_argument("--no-kmds", action="store_true")
+    p.add_argument("--no-ncmrd", action="store_true")
     p.add_argument("--push", default="",
                    help="starrydata3 URL — push each paper to its review portal")
     p.add_argument("--push-key", default="", help="API key for --push")

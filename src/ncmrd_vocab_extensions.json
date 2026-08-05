@@ -1,5 +1,5 @@
 {
-  "_comment": "LOCAL vocabulary extensions — property terms the official KMDS schema does not define yet (KMDS v15.2.4 has no electrochemical/battery branch). These are honestly labeled as extensions: they let battery axes map to a controlled term instead of staying free text, but they are NOT official KMDS. Propose them upstream to the KMDS maintainers; when an official release adds them, delete the entries here and reseed Starrydata3 (manage.py seedprops). Keep this file in sync with /Users/Shared/starrydata3/kmds_vocab_extensions.json.",
+  "_comment": "LOCAL vocabulary extensions — property terms the official NCMRD schema does not define yet (NCMRD v15.2.4 has no electrochemical/battery branch). These are honestly labeled as extensions: they let battery axes map to a controlled term instead of staying free text, but they are NOT official NCMRD. Propose them upstream to the NCMRD maintainers; when an official release adds them, delete the entries here and reseed Starrydata3 (manage.py seedprops). Keep this file in sync with /Users/Shared/starrydata3/ncmrd_vocab_extensions.json.",
   "extensions": [
     {
       "name": "voltage",

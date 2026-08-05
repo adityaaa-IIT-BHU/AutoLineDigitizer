@@ -265,8 +265,8 @@ jobs:
             > If you skip the `.pth` downloads, the app offers to fetch them automatically on first launch (needs internet).
 
             ### Optional
-            - **Claude-assisted curation** (axis reading, legend naming, KMDS verification): add an Anthropic API key in Settings
-            - **Push to Starrydata3** (local KMDS database): https://github.com/adityaaa-IIT-BHU/starrydata3
+            - **Claude-assisted curation** (axis reading, legend naming, NCMRD verification): add an Anthropic API key in Settings
+            - **Push to Starrydata3** (local NCMRD database): https://github.com/adityaaa-IIT-BHU/starrydata3
             - **Push to Starrydata2** (internal API, token auth): save your api-token to `~/.sd2_token`
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

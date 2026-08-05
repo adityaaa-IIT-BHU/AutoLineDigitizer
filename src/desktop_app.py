@@ -62,7 +62,7 @@ from app_settings import (load_saved_api_key, save_api_key,
                           get_setting, set_setting)
 
 # Activate a previously-saved Anthropic key (env var wins) before any of the
-# VLM/KMDS components check for one.
+# VLM/NCMRD components check for one.
 load_saved_api_key()
 
 try:
@@ -76,10 +76,10 @@ except Exception as _vlm_err:
         return False
 
 try:
-    import kmds_vocab
-    KMDS_VOCAB_AVAILABLE = kmds_vocab.available()
+    import ncmrd_vocab
+    NCMRD_VOCAB_AVAILABLE = ncmrd_vocab.available()
 except Exception:  # noqa: BLE001
-    KMDS_VOCAB_AVAILABLE = False
+    NCMRD_VOCAB_AVAILABLE = False
     print(f"VLM verifier not available: {_vlm_err}")
 
 try:
@@ -119,15 +119,15 @@ except Exception as _scr_err:
     VLM_SCREENER_AVAILABLE = False
     print(f"VLM screener not available: {_scr_err}")
 
-# KMDS structured-metadata extraction (parallel Claude calls on the whole PDF).
+# NCMRD structured-metadata extraction (parallel Claude calls on the whole PDF).
 try:
-    import kmds_parallel
-    # Claude API or a configured local model server both enable KMDS
-    KMDS_AVAILABLE = kmds_parallel.kmds_backend_available()
-except Exception as _kmds_err:
-    kmds_parallel = None
-    KMDS_AVAILABLE = False
-    print(f"KMDS extraction not available: {_kmds_err}")
+    import ncmrd_parallel
+    # Claude API or a configured local model server both enable NCMRD
+    NCMRD_AVAILABLE = ncmrd_parallel.ncmrd_backend_available()
+except Exception as _ncmrd_err:
+    ncmrd_parallel = None
+    NCMRD_AVAILABLE = False
+    print(f"NCMRD extraction not available: {_ncmrd_err}")
 
 GITHUB_REPO = "adityaaa-IIT-BHU/AutoLineDigitizer"
 GITHUB_RELEASE_TAG = "models"
@@ -287,10 +287,10 @@ class LineFormerApp:
         self.pdf_figures = []        # list of (img_bgr, meta) for the gallery
         self.current_figure_idx = None
 
-        # Paper-record handoff: parsed KMDS record + per-figure digitizations
-        # staged for "Open Paper Record" (the KMDS viewer).
-        self.kmds_record = None
-        self.merged_record = None    # KMDS + digitizations, for Starrydata3 upload
+        # Paper-record handoff: parsed NCMRD record + per-figure digitizations
+        # staged for "Open Paper Record" (the NCMRD viewer).
+        self.ncmrd_record = None
+        self.merged_record = None    # NCMRD + digitizations, for Starrydata3 upload
         self._auto_digitizing = False
         # per-figure review gate: {key: {"axes_ok": bool, "extraction_ok": bool}}
         # a figure uploads only once BOTH are checked by the person.
@@ -1228,16 +1228,16 @@ def main(page: ft.Page):
                 else "Needs ANTHROPIC_API_KEY + anthropic SDK.",
     )
 
-    # KMDS structured-metadata extraction (whole-PDF -> EN + JA JSON).
-    kmds_btn = ft.OutlinedButton(
-        "Extract Metadata (KMDS)", icon=ft.icons.DATASET, disabled=True,
-        tooltip="Run the parallel KMDS extraction on the open PDF: bibliography, "
+    # NCMRD structured-metadata extraction (whole-PDF -> EN + JA JSON).
+    ncmrd_btn = ft.OutlinedButton(
+        "Extract Metadata (NCMRD)", icon=ft.icons.DATASET, disabled=True,
+        tooltip="Run the parallel NCMRD extraction on the open PDF: bibliography, "
                 "materials, process, properties, figures -> structured EN + JA JSON. "
                 "Takes ~2-3 min and uses the Anthropic API."
-                if KMDS_AVAILABLE else "Needs ANTHROPIC_API_KEY + anthropic SDK.",
+                if NCMRD_AVAILABLE else "Needs ANTHROPIC_API_KEY + anthropic SDK.",
     )
 
-    # Paper-record handoff to the KMDS viewer.
+    # Paper-record handoff to the NCMRD viewer.
     save_fig_btn = ft.OutlinedButton(
         "Save figure → record", icon=ft.icons.PLAYLIST_ADD,
         tooltip="Stage the currently digitized figure (calibrated points + axes) "
@@ -1245,8 +1245,8 @@ def main(page: ft.Page):
     )
     open_record_btn = ft.OutlinedButton(
         "Open Paper Record", icon=ft.icons.MENU_BOOK, disabled=True,
-        tooltip="Build the KMDS paper record with your staged figure digitizations "
-                "and open it in the paper viewer (browser). Enabled once KMDS is "
+        tooltip="Build the NCMRD paper record with your staged figure digitizations "
+                "and open it in the paper viewer (browser). Enabled once NCMRD is "
                 "extracted or a figure is staged.",
     )
     sd3_upload_btn = ft.OutlinedButton(
@@ -1279,39 +1279,39 @@ def main(page: ft.Page):
         value=app_settings.get_setting("sd3_key", os.environ.get("ALD_SD3_KEY", "")),
         hint_text="sd3_…")
 
-    # KMDS results render INLINE (not a dialog) — updating inline controls from
+    # NCMRD results render INLINE (not a dialog) — updating inline controls from
     # a worker thread is the pattern that already works elsewhere in this app.
-    kmds_paths = {"en": None, "ja": None, "dir": None, "current": None}
-    kmds_title = ft.Text("KMDS metadata", size=16, weight=ft.FontWeight.BOLD, color=INK)
-    kmds_summary_text = ft.Text("", size=12, selectable=True)
-    kmds_en_btn = ft.TextButton("English")
-    kmds_ja_btn = ft.TextButton("日本語")
-    kmds_openfolder_btn = ft.TextButton("Open folder", icon=ft.icons.FOLDER_OPEN)
-    kmds_close_btn = ft.TextButton("Hide", icon=ft.icons.CLOSE)
-    kmds_save_btn = ft.FilledTonalButton("Save edits", icon=ft.icons.SAVE, disabled=True)
-    kmds_download_btn = ft.OutlinedButton("Download JSON…", icon=ft.icons.DOWNLOAD,
+    ncmrd_paths = {"en": None, "ja": None, "dir": None, "current": None}
+    ncmrd_title = ft.Text("NCMRD metadata", size=16, weight=ft.FontWeight.BOLD, color=INK)
+    ncmrd_summary_text = ft.Text("", size=12, selectable=True)
+    ncmrd_en_btn = ft.TextButton("English")
+    ncmrd_ja_btn = ft.TextButton("日本語")
+    ncmrd_openfolder_btn = ft.TextButton("Open folder", icon=ft.icons.FOLDER_OPEN)
+    ncmrd_close_btn = ft.TextButton("Hide", icon=ft.icons.CLOSE)
+    ncmrd_save_btn = ft.FilledTonalButton("Save edits", icon=ft.icons.SAVE, disabled=True)
+    ncmrd_download_btn = ft.OutlinedButton("Download JSON…", icon=ft.icons.DOWNLOAD,
                                           disabled=True)
-    kmds_edit_status = ft.Text("", size=12, color=INK_3, selectable=True)
-    kmds_json_view = ft.TextField(
+    ncmrd_edit_status = ft.Text("", size=12, color=INK_3, selectable=True)
+    ncmrd_json_view = ft.TextField(
         value="", read_only=True, multiline=True, min_lines=16, max_lines=22,
         text_size=11,
     )
     # Field-level editor: one text field per scalar leaf of the record,
     # grouped under collapsible top-level sections (metadata, system, ...).
-    kmds_fields_list = ft.ListView(spacing=4, height=440, padding=4)
-    kmds_editor_state = {"record": None, "rows": []}   # rows: (path, original, TextField)
-    kmds_tabs = ft.Tabs(tabs=[
-        ft.Tab(text="Fields", content=ft.Container(kmds_fields_list, padding=4)),
-        ft.Tab(text="Raw JSON", content=ft.Container(kmds_json_view, padding=4)),
+    ncmrd_fields_list = ft.ListView(spacing=4, height=440, padding=4)
+    ncmrd_editor_state = {"record": None, "rows": []}   # rows: (path, original, TextField)
+    ncmrd_tabs = ft.Tabs(tabs=[
+        ft.Tab(text="Fields", content=ft.Container(ncmrd_fields_list, padding=4)),
+        ft.Tab(text="Raw JSON", content=ft.Container(ncmrd_json_view, padding=4)),
     ], height=500)
-    kmds_panel = ft.Container(
+    ncmrd_panel = ft.Container(
         content=ft.Column([
             ft.Row([ft.Icon(ft.icons.DATASET_OUTLINED, size=18, color=ACCENT),
-                    kmds_title, ft.Container(expand=True),
-                    kmds_en_btn, kmds_ja_btn, kmds_openfolder_btn, kmds_close_btn]),
-            kmds_summary_text,
-            ft.Row([kmds_save_btn, kmds_download_btn, kmds_edit_status]),
-            kmds_tabs,
+                    ncmrd_title, ft.Container(expand=True),
+                    ncmrd_en_btn, ncmrd_ja_btn, ncmrd_openfolder_btn, ncmrd_close_btn]),
+            ncmrd_summary_text,
+            ft.Row([ncmrd_save_btn, ncmrd_download_btn, ncmrd_edit_status]),
+            ncmrd_tabs,
         ], spacing=6),
         visible=False, padding=14,
         border=ft.border.all(1, RULE), border_radius=14,
@@ -1395,9 +1395,9 @@ def main(page: ft.Page):
         "✦ Ask Claude", tooltip="Have Claude read the figure and fill in the X/Y "
         "axis property names + units — verify and edit before approving.")
     # Per-axis verification (like the legend panel, but for axis PROPERTIES):
-    # what the model detected → what KMDS makes of it → editable → savable.
-    kmds_x_text = ft.Text("", size=12, selectable=True)
-    kmds_y_text = ft.Text("", size=12, selectable=True)
+    # what the model detected → what NCMRD makes of it → editable → savable.
+    ncmrd_x_text = ft.Text("", size=12, selectable=True)
+    ncmrd_y_text = ft.Text("", size=12, selectable=True)
     save_axes_btn = ft.TextButton(
         "Save axes", tooltip="Stage the verified axis properties for this figure "
         "(also happens automatically when you switch figures or approve).")
@@ -1810,11 +1810,11 @@ def main(page: ft.Page):
         page.update()
         reprocess_lines()
 
-    def _update_kmds_pair():
+    def _update_ncmrd_pair():
         """Per-axis live readout under the axis fields: what the model
         DETECTED, what the (possibly hand-edited) field says now, and what
-        KMDS makes of it. ⚠ marks names the KMDS vocabulary doesn't define
-        (kept verbatim, flagged non-KMDS on upload)."""
+        NCMRD makes of it. ⚠ marks names the NCMRD vocabulary doesn't define
+        (kept verbatim, flagged non-NCMRD on upload)."""
         def line(label, field_val, detected):
             cur = (field_val or "").strip()
             if not cur:
@@ -1822,37 +1822,37 @@ def main(page: ft.Page):
                     return f"{label}: model detected “{detected}” — edit or ✦ Ask Claude", INK_3
                 return f"{label}: no axis property yet — type it or ✦ Ask Claude", INK_3
             det = f"  (detected: “{detected}”)" if detected and detected != cur else ""
-            term = kmds_vocab.match(cur) if KMDS_VOCAB_AVAILABLE else None
+            term = ncmrd_vocab.match(cur) if NCMRD_VOCAB_AVAILABLE else None
             if term:
-                unit = kmds_vocab.unit_of(term)
+                unit = ncmrd_vocab.unit_of(term)
                 u = f" ({unit})" if unit else ""
-                if kmds_vocab.is_extension(term):
+                if ncmrd_vocab.is_extension(term):
                     return (f"{label}: {cur}{det}  →  extension: {term}{u}  ✓ "
-                            f"(local term — not yet official KMDS)"), OK
-                return f"{label}: {cur}{det}  →  KMDS: {term}{u}  ✓", OK
-            return (f"{label}: {cur}{det}  →  ⚠ not in the KMDS vocabulary "
+                            f"(local term — not yet official NCMRD)"), OK
+                return f"{label}: {cur}{det}  →  NCMRD: {term}{u}  ✓", OK
+            return (f"{label}: {cur}{det}  →  ⚠ not in the NCMRD vocabulary "
                     f"(kept as-is, flagged on upload)"), WARN
 
-        kmds_x_text.value, kmds_x_text.color = line(
+        ncmrd_x_text.value, ncmrd_x_text.color = line(
             "X", x_axis_name_field.value, getattr(app, "x_axis_detected", ""))
-        kmds_y_text.value, kmds_y_text.color = line(
+        ncmrd_y_text.value, ncmrd_y_text.color = line(
             "Y", y_axis_name_field.value, getattr(app, "y_axis_detected", ""))
 
     def _grow_vocab_from_axes():
         """New properties inevitably turn up. Any committed axis property that
-        isn't in the vocabulary is added to kmds_vocab_extensions.json and
+        isn't in the vocabulary is added to ncmrd_vocab_extensions.json and
         synced to Starrydata3 so the server's ingest flags agree. With Claude
         available the name is canonicalized first (and noise/non-properties
         rejected, provenance added_by=claude); without Claude the curator's
         wording is trusted as-is (added_by=curator) — a verified axis name IS
         a property name."""
-        if not KMDS_VOCAB_AVAILABLE:
+        if not NCMRD_VOCAB_AVAILABLE:
             return
         import re as _re
         unmatched = []
         for nm in _current_axis_names():
             base = _re.sub(r"\s*\([^()]*\)\s*$", "", nm or "").strip()
-            if base and base.upper() not in ("X", "Y") and kmds_vocab.match(nm) is None:
+            if base and base.upper() not in ("X", "Y") and ncmrd_vocab.match(nm) is None:
                 unmatched.append(nm)
         if not unmatched:
             return
@@ -1882,12 +1882,12 @@ def main(page: ft.Page):
                            and p.get("name")]
             else:
                 entries = _fallback_entries()
-            added = kmds_vocab.add_extensions(entries)
+            added = ncmrd_vocab.add_extensions(entries)
         except Exception as ex:  # noqa: BLE001
             print(f"[vocab-grow] {ex} — falling back to curator wording")
             try:
                 entries = _fallback_entries()
-                added = kmds_vocab.add_extensions(entries)
+                added = ncmrd_vocab.add_extensions(entries)
             except Exception as ex2:  # noqa: BLE001
                 print(f"[vocab-grow] fallback failed: {ex2}")
                 return
@@ -1908,18 +1908,18 @@ def main(page: ft.Page):
                              headers={"X-API-Key": key}, timeout=10)
             except Exception as ex:  # noqa: BLE001
                 print(f"[vocab-grow] starrydata3 sync failed: {ex}")
-        _update_kmds_pair()
-        process_status_text.value = ("✦ New KMDS extension term(s) added: "
+        _update_ncmrd_pair()
+        process_status_text.value = ("✦ New NCMRD extension term(s) added: "
                                      + ", ".join(added)
-                                     + "  (src/kmds_vocab_extensions.json — edit to undo)")
+                                     + "  (src/ncmrd_vocab_extensions.json — edit to undo)")
 
     def on_save_axes(_):
         app.x_axis_name = (x_axis_name_field.value or "").strip()
         app.y_axis_name = (y_axis_name_field.value or "").strip()
-        _update_kmds_pair()
+        _update_ncmrd_pair()
 
         def _w():
-            # saving axes with a property KMDS doesn't know → create it
+            # saving axes with a property NCMRD doesn't know → create it
             _grow_vocab_from_axes()
             page.update()
         page.run_thread(_w)
@@ -1937,7 +1937,7 @@ def main(page: ft.Page):
     def on_axis_name_change(e):
         app.x_axis_name = (x_axis_name_field.value or "").strip()
         app.y_axis_name = (y_axis_name_field.value or "").strip()
-        _update_kmds_pair()
+        _update_ncmrd_pair()
         update_data_table()
 
     def _series_axis_names(i, x_name, y_name):
@@ -2228,7 +2228,7 @@ def main(page: ft.Page):
                     if y_name and not (y_axis_name_field.value or "").strip():
                         y_axis_name_field.value = y_name
                         app.y_axis_name = y_name
-                    _update_kmds_pair()
+                    _update_ncmrd_pair()
 
                     # Secondary axes straight from ChartDete's own tick labels
                     # (right-hand y / top x) — no Claude required. Names stay
@@ -2310,7 +2310,7 @@ def main(page: ft.Page):
                                 app.y_axis_detected = cy
                             if fidx is not None:
                                 app._vlm_axes_read.add(fidx)
-                            _update_kmds_pair()
+                            _update_ncmrd_pair()
                             _grow_vocab_from_axes()
                     except Exception as ex:  # noqa: BLE001
                         print(f"[axes-vlm] {ex}")
@@ -2480,8 +2480,8 @@ def main(page: ft.Page):
         app.y_axis_name = ""
         app.x_axis_detected = ""
         app.y_axis_detected = ""
-        kmds_x_text.value = ""
-        kmds_y_text.value = ""
+        ncmrd_x_text.value = ""
+        ncmrd_y_text.value = ""
         build_gallery(selected_idx=idx)
         page.update()
         load_image(img_bgr.copy(), image_path=app.pdf_path, figure_idx=idx)
@@ -2579,14 +2579,14 @@ def main(page: ft.Page):
         process_status_text.value = (
             f"{len(figs)} figure(s) found. Click one to extract its data."
         )
-        # A PDF is now open: enable whole-PDF KMDS metadata + AI re-review.
-        kmds_btn.disabled = not (KMDS_AVAILABLE and str(app.pdf_path).lower().endswith(".pdf"))
+        # A PDF is now open: enable whole-PDF NCMRD metadata + AI re-review.
+        ncmrd_btn.disabled = not (NCMRD_AVAILABLE and str(app.pdf_path).lower().endswith(".pdf"))
         review_figures_btn.disabled = not (app._vlm_screener_available()
                                            and str(app.pdf_path).lower().endswith(".pdf"))
         build_gallery()
-        # Reuse an already-extracted KMDS record if one is saved next to the PDF
+        # Reuse an already-extracted NCMRD record if one is saved next to the PDF
         # (so testing doesn't re-run the paid extraction).
-        _try_load_existing_kmds(pdf_path)
+        _try_load_existing_ncmrd(pdf_path)
         _try_load_existing_batch(pdf_path)
         # Auto-load the first figure so the user sees results immediately.
         on_thumbnail_click(0)
@@ -2636,35 +2636,41 @@ def main(page: ft.Page):
                 process_status_text.value = (
                     f"⚡ Batch run found: {len(figs)} figure(s) digitized, "
                     f"{n_pre} staged — click each figure to review.")
-                if not kmds_clock.get("running"):
+                if not ncmrd_clock.get("running"):
                     open_record_btn.disabled = False
         except Exception as ex:  # noqa: BLE001
             print(f"[batch-load] {ex}")
 
-    def _try_load_existing_kmds(pdf_path):
+    def _try_load_existing_ncmrd(pdf_path):
         try:
             base = Path(pdf_path).stem
-            out_dir = os.path.join(os.path.dirname(pdf_path) or ".", f"{base}_kmds")
+            out_dir = os.path.join(os.path.dirname(pdf_path) or ".", f"{base}_ncmrd")
             en_path = os.path.join(out_dir, f"{base}.json")
             if not os.path.exists(en_path):
-                return
+                # records written before the KMDS -> NCMRD rename
+                legacy_dir = os.path.join(os.path.dirname(pdf_path) or ".",
+                                          f"{base}_kmds")
+                legacy_en = os.path.join(legacy_dir, f"{base}.json")
+                if not os.path.exists(legacy_en):
+                    return
+                out_dir, en_path = legacy_dir, legacy_en
             with open(en_path, "r", encoding="utf-8") as f:
-                app.kmds_record = json.load(f)
-            kmds_paths["en"] = en_path
+                app.ncmrd_record = json.load(f)
+            ncmrd_paths["en"] = en_path
             ja_path = os.path.join(out_dir, f"{base}_ja.json")
-            kmds_paths["ja"] = ja_path if os.path.exists(ja_path) else None
-            kmds_paths["dir"] = out_dir
-            kmds_title.value = "KMDS metadata (English) — loaded from disk"
-            kmds_summary_text.value = (f"Reusing saved KMDS metadata (no re-extraction).\n"
+            ncmrd_paths["ja"] = ja_path if os.path.exists(ja_path) else None
+            ncmrd_paths["dir"] = out_dir
+            ncmrd_title.value = "NCMRD metadata (English) — loaded from disk"
+            ncmrd_summary_text.value = (f"Reusing saved NCMRD metadata (no re-extraction).\n"
                                        f"Loaded: {en_path}")
-            _kmds_load_json(en_path, "(could not read saved KMDS JSON)")
-            kmds_ja_btn.disabled = not kmds_paths["ja"]
-            kmds_panel.visible = True
+            _ncmrd_load_json(en_path, "(could not read saved NCMRD JSON)")
+            ncmrd_ja_btn.disabled = not ncmrd_paths["ja"]
+            ncmrd_panel.visible = True
             open_record_btn.disabled = False
             process_status_text.value = (process_status_text.value +
-                                         "  ·  reusing saved KMDS metadata")
+                                         "  ·  reusing saved NCMRD metadata")
         except Exception as ex:  # noqa: BLE001
-            print(f"[kmds] could not load existing record: {ex}")
+            print(f"[ncmrd] could not load existing record: {ex}")
 
     def pick_pdf_result(e: ft.FilePickerResultEvent):
         if e.files and len(e.files) > 0:
@@ -2680,7 +2686,7 @@ def main(page: ft.Page):
 
     def batch_pick_result(e: ft.FilePickerResultEvent):
         """Batch digitize: run the full unattended pipeline (figures, curves,
-        axes, assists, local KMDS) on every picked PDF, using this app's
+        axes, assists, local NCMRD) on every picked PDF, using this app's
         already-loaded models. Each PDF then opens pre-digitized for review."""
         if not e.files:
             return
@@ -2689,17 +2695,17 @@ def main(page: ft.Page):
             return
 
         # Closed-access safety: NEVER silently pick a backend — ask every
-        # time whether AI stages (KMDS + naming) run locally or on Claude.
+        # time whether AI stages (NCMRD + naming) run locally or on Claude.
         def _choose(backend):
             batch_dlg.open = False
             page.update()
             if backend == "local":
                 os.environ["ALD_LLM_BACKEND"] = "local"
-                os.environ["KMDS_MODEL"] = ("local:"
-                                            + kmds_parallel._local_text_model())
+                os.environ["NCMRD_MODEL"] = ("local:"
+                                            + ncmrd_parallel._local_text_model())
             else:
                 os.environ["ALD_LLM_BACKEND"] = "anthropic"
-                os.environ.pop("KMDS_MODEL", None)
+                os.environ.pop("NCMRD_MODEL", None)
             # the choice is THE backend from now on: persist it (settings)
             # and drop any assistant built on the previous backend so every
             # ✦ tool (label lines, fix axes, verify, vocab) rebuilds on it
@@ -2725,7 +2731,7 @@ def main(page: ft.Page):
             title=ft.Text("Where should the AI stages run?"),
             content=ft.Text(
                 f"{len(paths)} PDF(s) selected. Curve/axis digitization is "
-                f"always local. Choose the backend for KMDS extraction and "
+                f"always local. Choose the backend for NCMRD extraction and "
                 f"AI naming:\n\n🔒 Local GPU — nothing leaves the lab "
                 f"(required for closed-access papers)\n☁️ Claude API — "
                 f"paper text and figures are sent to Anthropic"),
@@ -2753,14 +2759,14 @@ def main(page: ft.Page):
             args = types.SimpleNamespace(
                 model=model_dropdown.value or "general_v2",
                 detector="mineru", force=False, verbose=False,
-                no_kmds=False,
+                no_ncmrd=False,
                 push=(app_settings.get_setting("sd3_url") or "").strip(),
                 push_key=(app_settings.get_setting("sd3_key") or "").strip())
             done = 0
             for i, pdf in enumerate(paths, 1):
                 process_status_text.value = (
                     f"⚙ Batch {i}/{len(paths)}: {os.path.basename(pdf)} — "
-                    f"digitizing on this machine, KMDS on the local model…")
+                    f"digitizing on this machine, NCMRD on the local model…")
                 page.update()
                 try:
                     r = batch_run.run_pdf(app, pdf, args)
@@ -2780,7 +2786,7 @@ def main(page: ft.Page):
     page.overlay.append(batch_picker)
     batch_btn = ft.OutlinedButton(
         "Batch digitize…",
-        tooltip="Pick several PDFs — every figure is digitized and the KMDS "
+        tooltip="Pick several PDFs — every figure is digitized and the NCMRD "
                 "record extracted unattended (local models). Reopen each PDF "
                 "to review with the full toolbox, then upload.",
         on_click=lambda _: batch_picker.pick_files(
@@ -2988,123 +2994,123 @@ def main(page: ft.Page):
 
     delete_fig_btn.on_click = on_delete_figure
 
-    # ---- KMDS metadata extraction (whole PDF -> EN + JA structured JSON) ----
-    def _kmds_build_editor(record):
+    # ---- NCMRD metadata extraction (whole PDF -> EN + JA structured JSON) ----
+    def _ncmrd_build_editor(record):
         """Populate the Fields tab: one TextField per scalar leaf, grouped
         under top-level section headers."""
-        from kmds_editor import flatten_record, leaf_to_text
-        kmds_fields_list.controls.clear()
-        kmds_editor_state["rows"] = []
+        from ncmrd_editor import flatten_record, leaf_to_text
+        ncmrd_fields_list.controls.clear()
+        ncmrd_editor_state["rows"] = []
         if not isinstance(record, dict):
-            kmds_fields_list.controls.append(
+            ncmrd_fields_list.controls.append(
                 ft.Text("(record is not a JSON object — use Raw JSON tab)", size=12))
             return
         section = None
         for path, label, value in flatten_record(record):
             if path[0] != section:
                 section = path[0]
-                kmds_fields_list.controls.append(ft.Container(
+                ncmrd_fields_list.controls.append(ft.Container(
                     ft.Text(str(section), size=13, weight=ft.FontWeight.BOLD),
                     padding=ft.padding.only(top=10)))
             tf = ft.TextField(
                 value=leaf_to_text(value), label=label, dense=True,
                 text_size=12, multiline=True, max_lines=3,
             )
-            kmds_editor_state["rows"].append((path, value, tf))
-            kmds_fields_list.controls.append(tf)
+            ncmrd_editor_state["rows"].append((path, value, tf))
+            ncmrd_fields_list.controls.append(tf)
 
-    def _kmds_load_json(path, fallback):
-        kmds_paths["current"] = path
-        kmds_edit_status.value = ""
+    def _ncmrd_load_json(path, fallback):
+        ncmrd_paths["current"] = path
+        ncmrd_edit_status.value = ""
         try:
             with open(path, "r", encoding="utf-8") as f:
-                kmds_json_view.value = f.read()
-            kmds_editor_state["record"] = json.loads(kmds_json_view.value)
+                ncmrd_json_view.value = f.read()
+            ncmrd_editor_state["record"] = json.loads(ncmrd_json_view.value)
         except Exception:
-            kmds_json_view.value = fallback
-            kmds_editor_state["record"] = None
-        _kmds_build_editor(kmds_editor_state["record"])
-        has_record = kmds_editor_state["record"] is not None
-        kmds_save_btn.disabled = not has_record
-        kmds_download_btn.disabled = not has_record
+            ncmrd_json_view.value = fallback
+            ncmrd_editor_state["record"] = None
+        _ncmrd_build_editor(ncmrd_editor_state["record"])
+        has_record = ncmrd_editor_state["record"] is not None
+        ncmrd_save_btn.disabled = not has_record
+        ncmrd_download_btn.disabled = not has_record
         page.update()
 
-    def _kmds_collect_edits():
+    def _ncmrd_collect_edits():
         """Apply the field edits into the record. Returns error list."""
-        from kmds_editor import apply_text_edits
-        record = kmds_editor_state["record"]
+        from ncmrd_editor import apply_text_edits
+        record = ncmrd_editor_state["record"]
         if record is None:
             return ["no record loaded"]
         rows = [(path, original, tf.value if tf.value is not None else "")
-                for path, original, tf in kmds_editor_state["rows"]]
+                for path, original, tf in ncmrd_editor_state["rows"]]
         return apply_text_edits(record, rows)
 
-    def _kmds_refresh_after_apply():
+    def _ncmrd_refresh_after_apply():
         """Sync raw view + in-memory record used by the HTML record viewer."""
-        record = kmds_editor_state["record"]
-        kmds_json_view.value = json.dumps(record, indent=2, ensure_ascii=False)
-        if kmds_paths["current"] == kmds_paths["en"]:
-            app.kmds_record = record
+        record = ncmrd_editor_state["record"]
+        ncmrd_json_view.value = json.dumps(record, indent=2, ensure_ascii=False)
+        if ncmrd_paths["current"] == ncmrd_paths["en"]:
+            app.ncmrd_record = record
 
-    def _on_kmds_save(_):
-        errors = _kmds_collect_edits()
-        record = kmds_editor_state["record"]
-        path = kmds_paths["current"]
+    def _on_ncmrd_save(_):
+        errors = _ncmrd_collect_edits()
+        record = ncmrd_editor_state["record"]
+        path = ncmrd_paths["current"]
         if record is None or not path:
             return
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(record, f, indent=2, ensure_ascii=False)
-            _kmds_refresh_after_apply()
-            kmds_edit_status.value = (
+            _ncmrd_refresh_after_apply()
+            ncmrd_edit_status.value = (
                 f"Saved to {os.path.basename(path)}"
                 + (f" — {len(errors)} field(s) skipped: {errors[0]}" if errors else ""))
         except Exception as ex:
-            kmds_edit_status.value = f"Save failed: {ex}"
+            ncmrd_edit_status.value = f"Save failed: {ex}"
         page.update()
 
-    def _kmds_download_result(e: ft.FilePickerResultEvent):
+    def _ncmrd_download_result(e: ft.FilePickerResultEvent):
         if not e.path:
             return
-        errors = _kmds_collect_edits()
-        record = kmds_editor_state["record"]
+        errors = _ncmrd_collect_edits()
+        record = ncmrd_editor_state["record"]
         if record is None:
             return
         try:
             with open(e.path, "w", encoding="utf-8") as f:
                 json.dump(record, f, indent=2, ensure_ascii=False)
-            _kmds_refresh_after_apply()
-            kmds_edit_status.value = (
+            _ncmrd_refresh_after_apply()
+            ncmrd_edit_status.value = (
                 f"Downloaded to {e.path}"
                 + (f" — {len(errors)} field(s) skipped: {errors[0]}" if errors else ""))
         except Exception as ex:
-            kmds_edit_status.value = f"Download failed: {ex}"
+            ncmrd_edit_status.value = f"Download failed: {ex}"
         page.update()
 
-    kmds_download_picker = ft.FilePicker(on_result=_kmds_download_result)
+    ncmrd_download_picker = ft.FilePicker(on_result=_ncmrd_download_result)
 
-    def _on_kmds_download(_):
-        if kmds_editor_state["record"] is None:
+    def _on_ncmrd_download(_):
+        if ncmrd_editor_state["record"] is None:
             return
-        base = os.path.basename(kmds_paths["current"] or "kmds_record.json")
-        kmds_download_picker.save_file(
+        base = os.path.basename(ncmrd_paths["current"] or "ncmrd_record.json")
+        ncmrd_download_picker.save_file(
             file_name=base, allowed_extensions=["json"])
 
-    kmds_save_btn.on_click = _on_kmds_save
-    kmds_download_btn.on_click = _on_kmds_download
+    ncmrd_save_btn.on_click = _on_ncmrd_save
+    ncmrd_download_btn.on_click = _on_ncmrd_download
 
-    def _on_kmds_show_en(_):
-        if kmds_paths["en"]:
-            kmds_title.value = "KMDS metadata (English)"
-            _kmds_load_json(kmds_paths["en"], "(could not read EN JSON file)")
+    def _on_ncmrd_show_en(_):
+        if ncmrd_paths["en"]:
+            ncmrd_title.value = "NCMRD metadata (English)"
+            _ncmrd_load_json(ncmrd_paths["en"], "(could not read EN JSON file)")
 
-    def _on_kmds_show_ja(_):
-        if kmds_paths["ja"]:
-            kmds_title.value = "KMDS metadata (日本語)"
-            _kmds_load_json(kmds_paths["ja"], "(could not read JA JSON file)")
+    def _on_ncmrd_show_ja(_):
+        if ncmrd_paths["ja"]:
+            ncmrd_title.value = "NCMRD metadata (日本語)"
+            _ncmrd_load_json(ncmrd_paths["ja"], "(could not read JA JSON file)")
 
-    def _on_kmds_open_folder(_):
-        folder = kmds_paths["dir"]
+    def _on_ncmrd_open_folder(_):
+        folder = ncmrd_paths["dir"]
         if not folder:
             return
         try:
@@ -3119,53 +3125,53 @@ def main(page: ft.Page):
             process_status_text.value = f"Could not open folder: {ex}"
             page.update()
 
-    def _on_kmds_hide(_):
-        kmds_panel.visible = False
+    def _on_ncmrd_hide(_):
+        ncmrd_panel.visible = False
         page.update()
 
-    kmds_en_btn.on_click = _on_kmds_show_en
-    kmds_ja_btn.on_click = _on_kmds_show_ja
-    kmds_openfolder_btn.on_click = _on_kmds_open_folder
-    kmds_close_btn.on_click = _on_kmds_hide
+    ncmrd_en_btn.on_click = _on_ncmrd_show_en
+    ncmrd_ja_btn.on_click = _on_ncmrd_show_ja
+    ncmrd_openfolder_btn.on_click = _on_ncmrd_open_folder
+    ncmrd_close_btn.on_click = _on_ncmrd_hide
 
-    kmds_clock = {"running": False, "t0": 0.0}
+    ncmrd_clock = {"running": False, "t0": 0.0}
 
-    def on_kmds_click(_):
-        if not (KMDS_AVAILABLE and app.pdf_path and str(app.pdf_path).lower().endswith(".pdf")):
-            process_status_text.value = "Open a PDF first (KMDS runs on the whole PDF)."
+    def on_ncmrd_click(_):
+        if not (NCMRD_AVAILABLE and app.pdf_path and str(app.pdf_path).lower().endswith(".pdf")):
+            process_status_text.value = "Open a PDF first (NCMRD runs on the whole PDF)."
             page.update()
             return
         # extraction_prompt.md lives next to this module (src/), not at the project root.
         prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "extraction_prompt.md")
         if not os.path.exists(prompt_path):
-            process_status_text.value = "extraction_prompt.md not found; cannot run KMDS."
+            process_status_text.value = "extraction_prompt.md not found; cannot run NCMRD."
             page.update()
             return
-        kmds_btn.disabled = True
-        open_record_btn.disabled = True   # gate the viewer until KMDS is done
+        ncmrd_btn.disabled = True
+        open_record_btn.disabled = True   # gate the viewer until NCMRD is done
         process_progress_ring.visible = True
         page.update()
 
-        # Live elapsed-time loader: ticks once a second until KMDS completes.
+        # Live elapsed-time loader: ticks once a second until NCMRD completes.
         import time as _time
-        kmds_clock["running"] = True
-        kmds_clock["t0"] = _time.time()
+        ncmrd_clock["running"] = True
+        ncmrd_clock["t0"] = _time.time()
 
-        def _kmds_ticker():
-            while kmds_clock.get("running"):
-                el = _time.time() - kmds_clock["t0"]
-                if not kmds_clock.get("running"):
+        def _ncmrd_ticker():
+            while ncmrd_clock.get("running"):
+                el = _time.time() - ncmrd_clock["t0"]
+                if not ncmrd_clock.get("running"):
                     break
                 process_status_text.value = (
-                    f"⏳ Extracting KMDS metadata… {el:0.0f}s elapsed "
+                    f"⏳ Extracting NCMRD metadata… {el:0.0f}s elapsed "
                     f"(typically 2–3 min). Please wait — do not close."
                 )
                 page.update()
                 _time.sleep(1.0)
 
-        page.run_thread(_kmds_ticker)
+        page.run_thread(_ncmrd_ticker)
 
-        def run_kmds():
+        def run_ncmrd():
             # Whole body guarded: a worker-thread exception in flet is otherwise
             # swallowed silently (the executor future is never awaited), which
             # looks exactly like "nothing happened".
@@ -3173,40 +3179,40 @@ def main(page: ft.Page):
                 import asyncio
                 base = Path(app.pdf_path).stem
                 out_dir = os.path.join(os.path.dirname(app.pdf_path) or ".",
-                                       f"{base}_kmds")
+                                       f"{base}_ncmrd")
                 os.makedirs(out_dir, exist_ok=True)
                 try:
                     # translate=False: show the English record as soon as it is
                     # ready; the JA translation runs afterwards in the background.
-                    # KMDS_MODEL=gemini-3.5-flash switches extraction (and the
+                    # NCMRD_MODEL=gemini-3.5-flash switches extraction (and the
                     # background JA pass) to Gemini's free tier — needs
                     # GEMINI_API_KEY or GOOGLE_API_KEY instead of the Anthropic key.
-                    summary = asyncio.run(kmds_parallel.extract_kmds_parallel(
+                    summary = asyncio.run(ncmrd_parallel.extract_ncmrd_parallel(
                         app.pdf_path, out_dir, base_name=base, prompt_path=prompt_path,
-                        model=os.environ.get("KMDS_MODEL") or kmds_parallel.default_model(),
+                        model=(os.environ.get("NCMRD_MODEL") or os.environ.get("KMDS_MODEL")) or ncmrd_parallel.default_model(),
                         translate=False,
                     ))
                 except Exception as ex:
                     summary = {"_error": f"{type(ex).__name__}: {ex}"}
 
-                kmds_clock["running"] = False   # stop the elapsed-time loader
+                ncmrd_clock["running"] = False   # stop the elapsed-time loader
                 process_progress_ring.visible = False
-                kmds_btn.disabled = False
+                ncmrd_btn.disabled = False
 
                 if summary.get("_error"):
-                    process_status_text.value = f"KMDS failed: {summary['_error']}"
+                    process_status_text.value = f"NCMRD failed: {summary['_error']}"
                     open_record_btn.disabled = not bool(app.fig_digitizations)
                     page.update()
                     return
 
-                kmds_paths["en"] = summary.get("en_path")
-                kmds_paths["ja"] = summary.get("ja_path")
-                kmds_paths["dir"] = out_dir
+                ncmrd_paths["en"] = summary.get("en_path")
+                ncmrd_paths["ja"] = summary.get("ja_path")
+                ncmrd_paths["dir"] = out_dir
                 try:
                     with open(summary.get("en_path"), "r", encoding="utf-8") as _rf:
-                        app.kmds_record = json.load(_rf)
+                        app.ncmrd_record = json.load(_rf)
                 except Exception:
-                    app.kmds_record = None
+                    app.ncmrd_record = None
                 n_ok = summary.get("n_sections_ok", 0)
                 n_tot = summary.get("n_sections", 0)
                 elapsed = summary.get("elapsed_sec", 0)
@@ -3225,36 +3231,36 @@ def main(page: ft.Page):
                 conf = ("" if nv is None else
                         ("   |   Schema: ✓ valid" if nv == 0
                          else f"   |   Schema: {nv} violation(s)"))
-                _used_local = kmds_parallel._is_local(
-                    os.environ.get("KMDS_MODEL") or kmds_parallel.default_model())
+                _used_local = ncmrd_parallel._is_local(
+                    (os.environ.get("NCMRD_MODEL") or os.environ.get("KMDS_MODEL")) or ncmrd_parallel.default_model())
                 ja_state = ("skipped (local run)" if _used_local
                             else "translating in background…" if n_ok else "skipped")
                 _c = summary.get("confidence") or {}
                 if _c.get("grounded_ratio") is not None:
                     conf += (f"   |   grounded: {_c['grounded_ratio']:.0%} "
                              f"of {_c['checked_fields']} fields")
-                kmds_summary_text.value = (
+                ncmrd_summary_text.value = (
                     f"Sections OK: {n_ok}/{n_tot}   |   JA: {ja_state}{conf}"
                     f"   |   {elapsed:.0f}s, {out_tok:,} output tokens\n"
                     f"Saved to: {out_dir}{err_line}"
                 )
-                kmds_ja_btn.disabled = not kmds_paths["ja"]
-                kmds_title.value = "KMDS metadata (English)"
-                _kmds_load_json(kmds_paths["en"], "(could not read EN JSON file)")
-                kmds_panel.visible = True
+                ncmrd_ja_btn.disabled = not ncmrd_paths["ja"]
+                ncmrd_title.value = "NCMRD metadata (English)"
+                _ncmrd_load_json(ncmrd_paths["en"], "(could not read EN JSON file)")
+                ncmrd_panel.visible = True
                 if n_ok == 0:
                     # Nothing extracted — don't clobber a prior good record, and
                     # tell the user the actual cause.
-                    app.kmds_record = None
+                    app.ncmrd_record = None
                     open_record_btn.disabled = not bool(app.fig_digitizations)
                     process_status_text.value = (
-                        f"KMDS got 0/{n_tot} sections — extraction failed. "
+                        f"NCMRD got 0/{n_tot} sections — extraction failed. "
                         + (section_errs[0] if section_errs else "See terminal for details.")
                     )
                 else:
-                    open_record_btn.disabled = False   # KMDS ready → can open viewer
+                    open_record_btn.disabled = False   # NCMRD ready → can open viewer
                     process_status_text.value = (
-                        f"✓ KMDS done: {n_ok}/{n_tot} sections, {elapsed:.0f}s. "
+                        f"✓ NCMRD done: {n_ok}/{n_tot} sections, {elapsed:.0f}s. "
                         f"Click “Open Paper Record” to view."
                         + (f"  ({len(section_errs)} section(s) failed)" if section_errs else "")
                     )
@@ -3262,45 +3268,45 @@ def main(page: ft.Page):
 
                 # Background JA translation — the EN record is already on screen,
                 # so this no longer blocks the user (it used to add 3+ minutes).
-                if (n_ok and kmds_paths["en"]
-                        and not kmds_parallel._is_local(
-                            os.environ.get("KMDS_MODEL")
-                            or kmds_parallel.default_model())):
+                if (n_ok and ncmrd_paths["en"]
+                        and not ncmrd_parallel._is_local(
+                            (os.environ.get("NCMRD_MODEL") or os.environ.get("KMDS_MODEL"))
+                            or ncmrd_parallel.default_model())):
                     # (local extractions skip JA — translation needs the Claude API)
                     ja_target = os.path.join(out_dir, f"{base}_ja.json")
-                    _kmds_model = os.environ.get("KMDS_MODEL", "")
-                    _tr_model = (_kmds_model if _kmds_model.startswith("gemini")
-                                 else kmds_parallel.TRANSLATION_MODEL)
+                    _ncmrd_model = os.environ.get("NCMRD_MODEL", "")
+                    _tr_model = (_ncmrd_model if _ncmrd_model.startswith("gemini")
+                                 else ncmrd_parallel.TRANSLATION_MODEL)
                     try:
-                        tr = asyncio.run(kmds_parallel.translate_record_file(
-                            kmds_paths["en"], ja_target, prompt_path=prompt_path,
+                        tr = asyncio.run(ncmrd_parallel.translate_record_file(
+                            ncmrd_paths["en"], ja_target, prompt_path=prompt_path,
                             model=_tr_model))
                     except Exception as ex:
                         tr = {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
                     if tr.get("ok"):
-                        kmds_paths["ja"] = ja_target
-                        kmds_ja_btn.disabled = False
+                        ncmrd_paths["ja"] = ja_target
+                        ncmrd_ja_btn.disabled = False
                         ja_result = "OK"
                     else:
                         ja_result = f"failed — {tr.get('error')}"
-                    kmds_summary_text.value = kmds_summary_text.value.replace(
+                    ncmrd_summary_text.value = ncmrd_summary_text.value.replace(
                         "JA: translating in background…", f"JA: {ja_result}", 1)
                     page.update()
             except Exception as ex:
                 import traceback
                 traceback.print_exc()
-                kmds_clock["running"] = False
+                ncmrd_clock["running"] = False
                 process_progress_ring.visible = False
-                kmds_btn.disabled = False
+                ncmrd_btn.disabled = False
                 open_record_btn.disabled = not bool(app.fig_digitizations)
-                process_status_text.value = f"KMDS error: {type(ex).__name__}: {ex}"
+                process_status_text.value = f"NCMRD error: {type(ex).__name__}: {ex}"
                 page.update()
 
-        page.run_thread(run_kmds)
+        page.run_thread(run_ncmrd)
 
-    kmds_btn.on_click = on_kmds_click
+    ncmrd_btn.on_click = on_ncmrd_click
 
-    # ---- Paper-record handoff (native digitizer -> KMDS viewer) ----
+    # ---- Paper-record handoff (native digitizer -> NCMRD viewer) ----
     def _stage_current_figure(silent=False):
         """Snapshot the currently open figure's axes + digitized series into
         app.fig_digitizations. Called automatically on figure switch and when
@@ -3338,7 +3344,7 @@ def main(page: ft.Page):
             "series_axes": series_axes, "alt_axes": alt_axes,
             "axis_config": dict(app.axis_config or {}),   # provenance capsule
         }
-        if not kmds_clock.get("running"):
+        if not ncmrd_clock.get("running"):
             open_record_btn.disabled = False   # something to view now
         return label
 
@@ -3357,7 +3363,7 @@ def main(page: ft.Page):
     def _build_paper_record_html():
         import copy, re
         _stage_current_figure(silent=True)   # capture the open figure's latest state
-        record = copy.deepcopy(app.kmds_record) if app.kmds_record else {"metadata": {"publication": {"figures": []}}}
+        record = copy.deepcopy(app.ncmrd_record) if app.ncmrd_record else {"metadata": {"publication": {"figures": []}}}
         pub = record.setdefault("metadata", {}).setdefault("publication", {})
         figs = pub.get("figures")
         if not isinstance(figs, list):
@@ -3388,8 +3394,8 @@ def main(page: ft.Page):
             c, d = c - 0.1 * span, d + 0.1 * span
             return max(0.0, min(b, d) - max(a, c)) / (b - a)
 
-        def _range_match_kmds_graph(xr, yr, n_series):
-            """Best KMDS graph anywhere in the record whose real axes' tick
+        def _range_match_ncmrd_graph(xr, yr, n_series):
+            """Best NCMRD graph anywhere in the record whose real axes' tick
             ranges contain the digitized data on BOTH axes — so a calibrated
             curve attaches to its true graph (inheriting axes + samples)
             instead of a bare X/Y stub. Returns (graph, figure) or (None, None).
@@ -3415,7 +3421,7 @@ def main(page: ft.Page):
             return best, best_fig
 
         def _graph_score(dig, g, xs, ys):
-            """How well a digitization fits one KMDS graph: axis-name word
+            """How well a digitization fits one NCMRD graph: axis-name word
             overlap + digitized-range vs reference-tick overlap. Distinguishes
             the panels of a multi-panel figure."""
             axes = {str(a.get("axis") or "").lower(): a
@@ -3452,7 +3458,7 @@ def main(page: ft.Page):
 
         def _apply_verified_axes(graph, dig, key):
             """The curator marked this figure's Axes OK — their verified axis
-            names correct the graph's quantity terms, which the whole-PDF KMDS
+            names correct the graph's quantity terms, which the whole-PDF NCMRD
             extraction sometimes gets wrong. The old term is kept in the graph
             description for provenance."""
             if not (app.fig_reviews.get(key) or {}).get("axes_ok"):
@@ -3480,7 +3486,7 @@ def main(page: ft.Page):
 
         def _split_dig_by_axes(dig):
             """A dual-axis figure's series split into one dig per axis pair —
-            each becomes its own KMDS graph with the right property names."""
+            each becomes its own NCMRD graph with the right property names."""
             saxes = dig.get("series_axes") or []
             alt = dig.get("alt_axes") or {}
             if not alt or not any(saxes):
@@ -3537,10 +3543,10 @@ def main(page: ft.Page):
             xr = (min(xs), max(xs)) if xs else None
             yr = (min(ys), max(ys)) if ys else None
 
-            # PASS 1 — attach to the true KMDS graph anywhere in the record by
+            # PASS 1 — attach to the true NCMRD graph anywhere in the record by
             # value-range containment, so a calibrated curve inherits that
             # graph's real axes + linked samples instead of a bare X/Y stub.
-            best, best_fig = _range_match_kmds_graph(xr, yr, len(dig["series"]))
+            best, best_fig = _range_match_ncmrd_graph(xr, yr, len(dig["series"]))
             if best is not None:
                 best_fig["digitization"] = (best_fig.get("digitization") + " · " + summary) \
                     if best_fig.get("digitization") else summary
@@ -3594,7 +3600,7 @@ def main(page: ft.Page):
             _apply_verified_axes(best, dig, _key)
 
         app.merged_record = record   # stash for Starrydata3 upload (same record)
-        tmpl_path = os.path.join(SCRIPT_DIR, "kmds_paper_viewer_claude.html")
+        tmpl_path = os.path.join(SCRIPT_DIR, "ncmrd_paper_viewer_claude.html")
         with open(tmpl_path, "r", encoding="utf-8") as f:
             tmpl = f.read()
         data_js = json.dumps(record, ensure_ascii=False).replace("</", "<\\/")
@@ -3602,15 +3608,15 @@ def main(page: ft.Page):
                   "try{ if(window.__STUDIO_RECORD) validateAndRender(window.__STUDIO_RECORD); }"
                   "catch(e){ console.error(e); }</script>\n")
         html_out = tmpl.replace("</body>", inject + "</body>")
-        out_dir = kmds_paths.get("dir") or (os.path.dirname(app.pdf_path) if app.pdf_path else SCRIPT_DIR)
+        out_dir = ncmrd_paths.get("dir") or (os.path.dirname(app.pdf_path) if app.pdf_path else SCRIPT_DIR)
         out_path = os.path.join(out_dir, "paper_record_view.html")
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(html_out)
         return out_path
 
     def on_open_paper_record(_):
-        if not app.kmds_record and not app.fig_digitizations:
-            process_status_text.value = "Run KMDS and/or stage a figure first."
+        if not app.ncmrd_record and not app.fig_digitizations:
+            process_status_text.value = "Run NCMRD and/or stage a figure first."
             page.update()
             return
         try:
@@ -3699,7 +3705,7 @@ def main(page: ft.Page):
         app.fig_reviews[key]["axes_ok"] = bool(axes_ok_check.value)
         app.fig_reviews[key]["extraction_ok"] = bool(extraction_ok_check.value)
         if axes_ok_check.value:
-            # verified axes with a property KMDS doesn't know → create it
+            # verified axes with a property NCMRD doesn't know → create it
             def _w():
                 _grow_vocab_from_axes()
                 page.update()
@@ -3787,14 +3793,14 @@ def main(page: ft.Page):
                     done += 1
                 except Exception as ex:  # noqa: BLE001
                     print(f"[auto-digitize] figure {idx + 1} failed: {ex}")
-            if done and not kmds_clock.get("running"):
+            if done and not ncmrd_clock.get("running"):
                 open_record_btn.disabled = False
             return done
         finally:
             app._auto_digitizing = False
 
     def _pdf_doi(pdf_path):
-        """Best-effort DOI from the PDF text layer (for auto-upload without KMDS)."""
+        """Best-effort DOI from the PDF text layer (for auto-upload without NCMRD)."""
         try:
             import fitz
             import re as _re
@@ -3809,7 +3815,7 @@ def main(page: ft.Page):
     def on_upload_starrydata3(_):
         """Upload ONLY the figures the person approved (Axes OK + Extraction OK)."""
         approved = _approved_keys() & set(app.fig_digitizations.keys())
-        if not approved and not app.kmds_record:
+        if not approved and not app.ncmrd_record:
             process_status_text.value = ("Nothing approved yet — open each figure and "
                 "check Axes OK + Extraction OK, then upload.")
             page.update()
@@ -3838,7 +3844,7 @@ def main(page: ft.Page):
                     doi = _pdf_doi(app.pdf_path) if app.pdf_path else None
                     if not doi:
                         process_status_text.value = ("Approved figures ready, but no "
-                            "DOI — run KMDS first (or ensure the PDF has a DOI), then upload.")
+                            "DOI — run NCMRD first (or ensure the PDF has a DOI), then upload.")
                         return
                     pub["DOI"] = doi
                 import starrydata3_client
@@ -3876,14 +3882,14 @@ def main(page: ft.Page):
                 except Exception as ex:  # noqa: BLE001
                     print(f"[provenance] {ex}")
                 base = url.rstrip("/")
-                nonk = res.get("non_kmds_properties") or []
-                nonk_note = (f"  ⚠ non-KMDS props: {', '.join(nonk[:4])}" if nonk else "")
+                nonk = res.get("non_ncmrd_properties") or []
+                nonk_note = (f"  ⚠ non-NCMRD props: {', '.join(nonk[:4])}" if nonk else "")
                 un = res.get("unit_normalized_curves")
                 un_note = f", {un} unit-normalized" if un else ""
                 process_status_text.value = (
                     f"✓ Uploaded {len(approved)} approved figure(s) as SID-{res.get('sid')} "
                     f"({res.get('curves_indexed')} curves, "
-                    f"{res.get('kmds_curves')} KMDS-conformant{un_note}) — "
+                    f"{res.get('ncmrd_curves')} NCMRD-conformant{un_note}) — "
                     f"{base}/view/{res.get('sid')}{nonk_note}")
             else:
                 process_status_text.value = f"Starrydata3 upload failed: {res.get('error')}"
@@ -3904,7 +3910,7 @@ def main(page: ft.Page):
         if tools_dir not in _sys.path:
             _sys.path.insert(0, tools_dir)
         try:
-            from starrydata_upload import TokenClient, build_export_from_kmds, load_token
+            from starrydata_upload import TokenClient, build_export_from_ncmrd, load_token
         except Exception as ex:  # noqa: BLE001
             process_status_text.value = f"Starrydata2 uploader unavailable: {ex}"
             page.update()
@@ -3938,10 +3944,10 @@ def main(page: ft.Page):
                     doi = _pdf_doi(app.pdf_path) if app.pdf_path else None
                     if not doi:
                         process_status_text.value = ("Approved figures ready, but no DOI — "
-                            "run KMDS first (or ensure the PDF has a DOI), then upload.")
+                            "run NCMRD first (or ensure the PDF has a DOI), then upload.")
                         return
                     pub["DOI"] = doi
-                export = build_export_from_kmds(rec)
+                export = build_export_from_ncmrd(rec)
                 if not export.get("figures"):
                     skipped = "; ".join(str(s) for s in (export.get("skipped") or [])[:2])
                     process_status_text.value = ("Nothing uploadable — every graph was "
@@ -4100,7 +4106,7 @@ def main(page: ft.Page):
 
     model_import_picker = ft.FilePicker(on_result=import_model_result)
     page.overlay.extend([save_sd_picker, save_wpd_picker, save_csv_picker,
-                         model_import_picker, kmds_download_picker])
+                         model_import_picker, ncmrd_download_picker])
 
     def on_model_change(e):
         key = model_dropdown.value
@@ -4439,7 +4445,7 @@ def main(page: ft.Page):
         y_axis_name_field.value = ""
         app.x_axis_name = app.y_axis_name = ""
         app.x_axis_detected = app.y_axis_detected = ""
-        kmds_x_text.value = kmds_y_text.value = ""
+        ncmrd_x_text.value = ncmrd_y_text.value = ""
         alt_axes_text.value = ""
         axis_info_text.value = "Axes cleared — recalibrate (auto-detect, Fix Axis (AI), or manual)."
         if app.current_image is not None and app.data_series:
@@ -4796,12 +4802,12 @@ def main(page: ft.Page):
 
     # One consistent pill silhouette across every action button; per-button
     # colors (e.g. the destructive Delete Line) are set at the constructor.
-    for _b in (upload_btn, open_pdf_btn, batch_btn, recrop_btn, delete_fig_btn, review_figures_btn, kmds_btn,
+    for _b in (upload_btn, open_pdf_btn, batch_btn, recrop_btn, delete_fig_btn, review_figures_btn, ncmrd_btn,
                save_fig_btn, open_record_btn, sd3_upload_btn, export_sd_btn, export_wpd_btn,
                verify_btn, detect_markers_btn, axis_fix_btn, label_lines_btn,
                erase_btn, add_btn, apply_btn, done_btn, export_csv_btn,
-               api_key_save_btn, local_save_btn, kmds_save_btn,
-               kmds_download_btn):
+               api_key_save_btn, local_save_btn, ncmrd_save_btn,
+               ncmrd_download_btn):
         _b.style = ft.ButtonStyle(shape=_btn_shape)
 
     def on_save_api_key(_):
@@ -4908,7 +4914,7 @@ def main(page: ft.Page):
                 data_table_title, ft.Container(expand=True), export_csv_btn]),
         ft.Row([x_axis_name_field, y_axis_name_field, axis_claude_btn, save_axes_btn,
                 table_line_picker], spacing=10, wrap=True, run_spacing=6),
-        ft.Column([kmds_x_text, kmds_y_text], spacing=2),
+        ft.Column([ncmrd_x_text, ncmrd_y_text], spacing=2),
         table_row_count_text,
         data_table_scroll,
     ], spacing=8))
@@ -4919,7 +4925,7 @@ def main(page: ft.Page):
                     _vsep(),
                     pdf_detector_dropdown, review_figures_btn, recrop_btn, delete_fig_btn,
                     _vsep(),
-                    kmds_btn, save_fig_btn, open_record_btn],
+                    ncmrd_btn, save_fig_btn, open_record_btn],
                    alignment=ft.MainAxisAlignment.START,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                    wrap=True, run_spacing=8, spacing=8),
@@ -4982,7 +4988,7 @@ def main(page: ft.Page):
         info_text,
         axis_info_text,
         data_table_section,
-        kmds_panel,
+        ncmrd_panel,
     ], expand=True, scroll=ft.ScrollMode.AUTO, spacing=12)
 
     def _star(left, top, size, color, opacity):
@@ -5161,7 +5167,7 @@ def main(page: ft.Page):
     page.run_thread(load_models_async)
 
     # Auto-open a PDF on launch: ALD_OPEN_PDF=/path/to/paper.pdf. Same path as
-    # picking it in the file dialog — a saved *_kmds record next to the PDF is
+    # picking it in the file dialog — a saved *_ncmrd record next to the PDF is
     # loaded automatically.
     _auto_pdf = os.environ.get("ALD_OPEN_PDF", "").strip()
     if _auto_pdf and os.path.exists(_auto_pdf) and _auto_pdf.lower().endswith(".pdf"):

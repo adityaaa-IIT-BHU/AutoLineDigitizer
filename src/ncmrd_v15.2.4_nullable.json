@@ -12,8 +12,8 @@
   "^-^": "paper provenance and figure/table extraction structures; proposal for accommodating LLM-assisted data harvesting from publications (NIMS Yukari, 2025)"
  },
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "https://example.com/kmds-schema.json",
- "title": "KMDS materials research data schema",
+ "$id": "https://example.com/ncmrd-schema.json",
+ "title": "NCMRD materials research data schema",
  "description": "working copy for version 2025-01; Materials Research Data Schema (version 2025-01) developed by the Expert Committee for Materials R&D Data Standardization in the National Center of Materials Research Data (NCMRD) of Korea",
  "type": [
   "object",
@@ -47191,7 +47191,7 @@
    "additionalProperties": false
   },
   "reference": {
-   "description": "a single reference linking the parent component to an entry in an external database. The scheme field is intentionally an open string so that any database (Materials Project, ICSD, COD, AFLOW, KMDS-internal materials, or any future database) can be referenced without modifying the schema. A single component may have multiple references, recording the same compound across multiple databases ^-^",
+   "description": "a single reference linking the parent component to an entry in an external database. The scheme field is intentionally an open string so that any database (Materials Project, ICSD, COD, AFLOW, NCMRD-internal materials, or any future database) can be referenced without modifying the schema. A single component may have multiple references, recording the same compound across multiple databases ^-^",
    "type": [
     "object",
     "null"
@@ -47208,7 +47208,7 @@
     "scheme": {
      "description": "name of the external database or reference scheme; free-form string ^-^",
      "type": "string",
-     "examples": "Materials Project; ICSD; COD; AFLOW; KMDS material"
+     "examples": "Materials Project; ICSD; COD; AFLOW; NCMRD material"
     },
     "id": {
      "description": "identifier of the entry in the referenced database ^-^",
@@ -47445,7 +47445,7 @@
      ]
     },
     "quantity": {
-     "description": "physical quantity displayed on this axis. Always an object with 'term' (human-readable name) and 'ref' (JSON Pointer to a KMDS property vocabulary node when known). For data converted from external sources without measurement context (e.g. Starrydata), ref may be inferred to the most likely property node, with the inference recorded in the per-paper inference log ^-^",
+     "description": "physical quantity displayed on this axis. Always an object with 'term' (human-readable name) and 'ref' (JSON Pointer to a NCMRD property vocabulary node when known). For data converted from external sources without measurement context (e.g. Starrydata), ref may be inferred to the most likely property node, with the inference recorded in the per-paper inference log ^-^",
      "type": [
       "object",
       "null"
@@ -47457,7 +47457,7 @@
        "examples": "Temperature; Seebeck coefficient; electrical conductivity"
       },
       "ref": {
-       "description": "JSON Pointer to a KMDS property vocabulary node when known; pattern starts with '#/properties/' ^-^",
+       "description": "JSON Pointer to a NCMRD property vocabulary node when known; pattern starts with '#/properties/' ^-^",
        "type": [
         "string",
         "null"
@@ -47471,7 +47471,7 @@
      "additionalProperties": false
     },
     "unit": {
-     "description": "unit as printed on the axis, in TeX notation as used throughout KMDS (e.g. 'mu V K^{-1}', 'W m^{-1} K^{-1}') ^-^",
+     "description": "unit as printed on the axis, in TeX notation as used throughout NCMRD (e.g. 'mu V K^{-1}', 'W m^{-1} K^{-1}') ^-^",
      "type": [
       "string",
       "null"

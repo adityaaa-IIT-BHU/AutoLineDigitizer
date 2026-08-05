@@ -7,9 +7,9 @@ Open a new chat in any LLM interface that supports file attachments
 
 ```
 1. This prompt text (or paste the body below into the message)
-2. The KMDS schema JSON (latest public version, nullable variant 
+2. The NCMRD schema JSON (latest public version, nullable variant 
    recommended)
-   Current version: kmds_v15.2.4_nullable.json
+   Current version: ncmrd_v15.2.4_nullable.json
 3. The paper PDF to be extracted
 ```
 
@@ -27,7 +27,7 @@ fields.
 
 ### Project intent & ground rules
 
-This is part of the **Starrydata-KMDS** project: building a clean, 
+This is part of the **Starrydata-NCMRD** project: building a clean, 
 structured data record from THIS paper for a materials database. Follow 
 these ground rules so the output stays consistent and the run finishes 
 promptly:

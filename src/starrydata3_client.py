@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-starrydata3_client.py — push a KMDS record into a Starrydata3 server from the
+starrydata3_client.py — push a NCMRD record into a Starrydata3 server from the
 desktop app, over its REST API with an API key. No browser, no session.
 
     from starrydata3_client import push_record
@@ -12,7 +12,7 @@ from typing import Any, Dict
 
 def push_record(url: str, api_key: str, record: Dict[str, Any],
                 timeout: float = 120.0) -> Dict[str, Any]:
-    """POST a KMDS record to Starrydata3 /api/v1/records. Never raises —
+    """POST a NCMRD record to Starrydata3 /api/v1/records. Never raises —
     returns a dict with ok/sid/curves_indexed or ok=False + error."""
     url = (url or "").strip().rstrip("/")
     api_key = (api_key or "").strip()
@@ -38,9 +38,9 @@ def push_record(url: str, api_key: str, record: Dict[str, Any],
         return {"ok": False, "error": f"HTTP {r.status_code}: {detail}"}
     return {"ok": True, "sid": body.get("sid"), "doi": body.get("doi"),
             "curves_indexed": body.get("curves_indexed"),
-            "kmds_curves": body.get("kmds_curves"),
+            "ncmrd_curves": body.get("ncmrd_curves"),
             "unit_normalized_curves": body.get("unit_normalized_curves"),
-            "non_kmds_properties": body.get("non_kmds_properties") or [],
+            "non_ncmrd_properties": body.get("non_ncmrd_properties") or [],
             "n_violations": body.get("n_violations"), "url": url}
 
 

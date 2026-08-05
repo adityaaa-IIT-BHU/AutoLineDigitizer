@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-kmds_parallel.py — Parallel KMDS extraction (5 focused section calls + 1 translation).
+ncmrd_parallel.py — Parallel NCMRD extraction (5 focused section calls + 1 translation).
 
 Replaces the single monolithic ~16K-token Claude call in extract_paper.py with
 5 concurrent, focused section calls (asyncio.gather) merged in Python, followed
@@ -17,7 +17,7 @@ Design (approved):
   - If any section fails: save partials + continue; never crash the whole run
 
 Public entry point:
-  await extract_kmds_parallel(pdf_path, output_dir, base_name=None,
+  await extract_ncmrd_parallel(pdf_path, output_dir, base_name=None,
                               prompt_path="extraction_prompt.md")
 Returns a summary dict (same en_path/ja_path/input_tokens/output_tokens/elapsed_sec
 shape extract_paper.py already expects, plus per-section detail).
@@ -139,7 +139,7 @@ SUB_PROMPTS: Dict[str, str] = {
         "\n"
         "Cross-linking rules (the heart of this schema — do not skip):\n"
         "- `samples[].components[]`: for every component that corresponds to a "
-        "`materials[]` entry, add `{\"scheme\": \"KMDS material\", \"id\": "
+        "`materials[]` entry, add `{\"scheme\": \"NCMRD material\", \"id\": "
         "\"material_NN\"}` to its `references`; fill `role` and `fraction value`/"
         "`fraction unit` when the paper states them.\n"
         "- `scope.conclusions[]`: each entry is `{text, samples}` — list the `sample "
@@ -233,7 +233,7 @@ def _def_closure(defs: Dict[str, Any], roots) -> set:
 
 def build_section_schemas(schema: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """
-    Slice the full KMDS schema into a focused sub-schema per section call, so the
+    Slice the full NCMRD schema into a focused sub-schema per section call, so the
     model conforms to the REAL field names / value types / enums instead of a
     hand-written skeleton. Each fragment carries only the relevant top-level
     properties plus the $defs they transitively reference.
@@ -310,7 +310,7 @@ _NON_TERM_KEYS = {
 
 
 def _build_property_ref_index(schema: Dict[str, Any]) -> Dict[str, str]:
-    """Map normalized property-name/alias -> unique JSON Pointer into the KMDS
+    """Map normalized property-name/alias -> unique JSON Pointer into the NCMRD
     materials property vocabulary (for axes[].quantity.ref). Ambiguous terms
     (multiple pointers, e.g. 'temperature') are dropped."""
     try:
@@ -462,7 +462,7 @@ def repair_record(record: Dict[str, Any], schema: Dict[str, Any],
 
 
 def validate_record(record: Dict[str, Any], schema: Dict[str, Any]) -> List[str]:
-    """Validate a merged KMDS record against the full schema. Returns a list of
+    """Validate a merged NCMRD record against the full schema. Returns a list of
     human-readable violation strings (empty = valid). No-op if jsonschema is
     unavailable."""
     try:
@@ -580,7 +580,7 @@ async def _gemini_generate(content: List[Dict[str, Any]], model: str,
 
 
 # ===================================================================
-# Local backend (KMDS Foundry step 1): the lab model server via Ollama's
+# Local backend (NCMRD Foundry step 1): the lab model server via Ollama's
 # NATIVE API. Closed-access papers never leave the network — the paper
 # reaches the model as MinerU markdown, never as a PDF.
 # Empirically verified against Ollama 0.20.4: think:false works only on
@@ -591,13 +591,13 @@ async def _gemini_generate(content: List[Dict[str, Any]], model: str,
 LOCAL_PREFIX = "local:"
 # context CAP (prompt+output) for local calls; per-call num_ctx is computed
 # from the actual prompt size and only capped here. 49152 = glm's own pin.
-LOCAL_NUM_CTX = int(os.environ.get("ALD_LOCAL_KMDS_NUM_CTX", "49152"))
+LOCAL_NUM_CTX = int(os.environ.get("ALD_LOCAL_NCMRD_NUM_CTX", "49152"))
 _CHARS_PER_TOKEN = 3.2          # conservative for scientific English + JSON
 
 
 def _local_text_model() -> str:
     """env override → the model configured in Settings → glm default."""
-    m = os.environ.get("ALD_LOCAL_KMDS_TEXT_MODEL")
+    m = os.environ.get("ALD_LOCAL_NCMRD_TEXT_MODEL")
     if m:
         return m
     try:
@@ -609,14 +609,14 @@ def _local_text_model() -> str:
 
 
 def _local_vision_model() -> str:
-    return os.environ.get("ALD_LOCAL_KMDS_VISION_MODEL", "qwen2.5vl:32b")
+    return os.environ.get("ALD_LOCAL_NCMRD_VISION_MODEL", "qwen2.5vl:32b")
 
 
 def _is_local(model: str) -> bool:
     return (model or "").startswith(LOCAL_PREFIX)
 
 
-def local_kmds_available() -> bool:
+def local_ncmrd_available() -> bool:
     """A local model server is configured (llm_backend settings/env)."""
     try:
         from llm_backend import local_configured
@@ -625,8 +625,8 @@ def local_kmds_available() -> bool:
         return False
 
 
-def kmds_backend_available() -> bool:
-    return ANTHROPIC_AVAILABLE or local_kmds_available()
+def ncmrd_backend_available() -> bool:
+    return ANTHROPIC_AVAILABLE or local_ncmrd_available()
 
 
 def default_model() -> str:
@@ -639,11 +639,11 @@ def default_model() -> str:
         pinned_local = resolve_backend() == "local"
     except Exception:  # noqa: BLE001
         pinned_local = False
-    if pinned_local and local_kmds_available():
+    if pinned_local and local_ncmrd_available():
         return LOCAL_PREFIX + _local_text_model()
     if ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY"):
         return MODEL
-    if local_kmds_available():
+    if local_ncmrd_available():
         return LOCAL_PREFIX + _local_text_model()
     return MODEL
 
@@ -877,7 +877,7 @@ def _agenda_block(agenda: Dict[str, Any]) -> str:
 def _finalize_record(record: Dict[str, Any]) -> List[str]:
     """Deterministic clerical completion — the violation classes a model
     (especially a local one) fumbles but code fixes perfectly: required
-    KMDS bookkeeping fields, sample ids, and mechanical type coercions.
+    NCMRD bookkeeping fields, sample ids, and mechanical type coercions.
     Fills ONLY what is missing; a Claude record passes through untouched."""
     log: List[str] = []
     if not isinstance(record, dict):
@@ -894,7 +894,7 @@ def _finalize_record(record: Dict[str, Any]) -> List[str]:
             meta[key] = value
             log.append(f"metadata.{key} filled")
 
-    fill("data name", (title[:80] or "KMDS record"))
+    fill("data name", (title[:80] or "NCMRD record"))
     fill("data classification", ["EB0103"])
     dc = meta.get("data classification")
     if isinstance(dc, list):
@@ -1111,7 +1111,7 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
                               paper_text: Optional[str] = None,
                               paper_figures: Optional[List[Dict[str, Any]]] = None,
                               extra_context: Optional[str] = None) -> Dict[str, Any]:
-    """One focused Claude call for a single KMDS section. Never raises.
+    """One focused Claude call for a single NCMRD section. Never raises.
 
     paper_text: MinerU-extracted markdown of the paper. When given, this call
     sends the markdown INSTEAD of the PDF (cheaper, reading-order-clean).
@@ -1242,14 +1242,14 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
                       f"schema fragment (repair pass normalizes afterwards)")
                 content[0] = {**content[0], "text": static_no_schema +
                     "\n\n(No schema fragment fits this context — use exact "
-                    "KMDS field names; a schema-repair pass runs on your "
+                    "NCMRD field names; a schema-repair pass runs on your "
                     "output.)"}
                 est = _est_tokens(content)
                 est_text = _est_tokens([b for b in content if b["type"] == "text"])
             if est_text + mt + 512 > LOCAL_NUM_CTX:
                 raise RuntimeError(
                     f"prompt ~{est_text} tokens exceeds the local context cap "
-                    f"{LOCAL_NUM_CTX} — raise ALD_LOCAL_KMDS_NUM_CTX or "
+                    f"{LOCAL_NUM_CTX} — raise ALD_LOCAL_NCMRD_NUM_CTX or "
                     f"shorten the paper")
             needed = int(est * 1.15) + mt + 512
             # bucket num_ctx so consecutive calls reuse the loaded model
@@ -1270,7 +1270,7 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
                 # on a partial prompt, so fail the section loudly instead
                 raise RuntimeError(
                     f"server truncated the prompt (evaluated {pec} of "
-                    f"~{est_text} tokens) — raise ALD_LOCAL_KMDS_NUM_CTX")
+                    f"~{est_text} tokens) — raise ALD_LOCAL_NCMRD_NUM_CTX")
             raw = g.pop("text")
             g.pop("stop_reason", None)
             base.update(g)
@@ -1299,14 +1299,14 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
 
 
 # ===================================================================
-# Merge section fragments into a single KMDS dict
+# Merge section fragments into a single NCMRD dict
 # ===================================================================
 
 _EMPTY = (None, "", [], {})
 
 
 def merge_sections(results: List[Dict[str, Any]]) -> (Dict[str, Any], List[str]):
-    """Combine section fragments into one KMDS root. First non-null wins on conflict."""
+    """Combine section fragments into one NCMRD root. First non-null wins on conflict."""
     by_key = {r["key"]: r for r in results if r}
     warnings: List[str] = []
     merged: Dict[str, Any] = {}
@@ -1399,7 +1399,7 @@ def _namespace_digest(core_fragment: Optional[Dict[str, Any]]) -> Optional[str]:
 # Translation pass (EN → JA)
 # ===================================================================
 
-async def translate_kmds(en_dict: Dict[str, Any], client,
+async def translate_ncmrd(en_dict: Dict[str, Any], client,
                          translation_rules: str,
                          model: str = TRANSLATION_MODEL) -> Dict[str, Any]:
     """One LLM call: translate natural-language values to Japanese. Never raises.
@@ -1409,14 +1409,14 @@ async def translate_kmds(en_dict: Dict[str, Any], client,
     t0 = time.time()
     en_json = json.dumps(en_dict, ensure_ascii=False, indent=2)
     instruction = (
-        "You are translating a COMPLETED KMDS JSON record from English to Japanese. "
+        "You are translating a COMPLETED NCMRD JSON record from English to Japanese. "
         "This is a translation, not a re-extraction — the two files MUST be structurally "
         "identical. Apply these rules from the extraction specification VERBATIM:\n\n"
         + translation_rules
         + "\n\nReturn ONLY the Japanese JSON in a single ```json code block — same keys, "
           "enums, numbers, units, sample/material ids, formulas, and identifiers "
           "byte-for-byte; translate only the natural-language free-text values listed "
-          "above; a field null in English stays null.\n\nEnglish KMDS JSON:\n```json\n"
+          "above; a field null in English stays null.\n\nEnglish NCMRD JSON:\n```json\n"
         + en_json + "\n```"
     )
 
@@ -1473,7 +1473,7 @@ async def translate_kmds(en_dict: Dict[str, Any], client,
 async def translate_record_file(en_path: str, ja_path: str,
                                 prompt_path: str = "extraction_prompt.md",
                                 model: str = TRANSLATION_MODEL) -> Dict[str, Any]:
-    """Standalone EN→JA translation of a saved KMDS record (for running in the
+    """Standalone EN→JA translation of a saved NCMRD record (for running in the
     background after the English record is already shown). Never raises."""
     try:
         blocks = load_prompt_blocks(prompt_path)
@@ -1484,7 +1484,7 @@ async def translate_record_file(en_path: str, ja_path: str,
     client_cm = (contextlib.nullcontext() if model.startswith("gemini")
                  else AsyncAnthropic())
     async with client_cm as client:
-        tr = await translate_kmds(en_dict, client, blocks["translation"], model=model)
+        tr = await translate_ncmrd(en_dict, client, blocks["translation"], model=model)
     if tr.get("ok"):
         with open(ja_path, "w", encoding="utf-8") as f:
             json.dump(tr["ja"], f, indent=2, ensure_ascii=False)
@@ -1538,14 +1538,14 @@ def _mineru_paper_markdown(pdf_path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-async def extract_kmds_parallel(pdf_path: str, output_dir: str,
+async def extract_ncmrd_parallel(pdf_path: str, output_dir: str,
                                 base_name: Optional[str] = None,
                                 prompt_path: str = "extraction_prompt.md",
                                 model: str = MODEL,
                                 schema_path: Optional[str] = None,
                                 use_mineru_text: bool = True,
                                 translate: bool = True) -> Dict[str, Any]:
-    """Run the two-phase KMDS extraction (+ optional JA translation).
+    """Run the two-phase NCMRD extraction (+ optional JA translation).
 
     translate=False skips the JA pass so callers can show the English record
     immediately and run translate_record_file() in the background."""
@@ -1555,7 +1555,7 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
             return {"_error": "GEMINI_API_KEY / GOOGLE_API_KEY not set"}
     elif is_local:
-        if not local_kmds_available():
+        if not local_ncmrd_available():
             return {"_error": "local model server not configured "
                               "(Settings → Local model server / ALD_LOCAL_LLM_URL)"}
     else:
@@ -1573,18 +1573,18 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         return {"_error": f"Could not extract ground-rules block from {prompt_path}"}
     pdf_b64 = _encode_pdf_b64(pdf_path)
 
-    # Load the real KMDS schema and slice a focused sub-schema per section so the
+    # Load the real NCMRD schema and slice a focused sub-schema per section so the
     # model conforms to actual field names / types / enums (not a skeleton).
     if schema_path is None:
         here = os.path.dirname(os.path.abspath(__file__))
-        schema_path = os.path.join(here, "kmds_v15.2.4_nullable.json")
+        schema_path = os.path.join(here, "ncmrd_v15.2.4_nullable.json")
     full_schema = None
     section_schemas: Dict[str, Any] = {}
     try:
         with open(schema_path, "r", encoding="utf-8") as f:
             full_schema = json.load(f)
         section_schemas = build_section_schemas(full_schema)
-        print(f"⤷ Using KMDS schema: {os.path.basename(schema_path)} "
+        print(f"⤷ Using NCMRD schema: {os.path.basename(schema_path)} "
               f"({len(section_schemas)} section sub-schemas)")
     except Exception as e:
         print(f"⚠ schema not loaded ({e}); falling back to skeleton-free prompts.")
@@ -1616,7 +1616,7 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         print("⤷ MinerU text unavailable (weights missing or scanned PDF) — raw PDF for all calls")
 
     if is_local and paper_text is None:
-        return {"_error": "local KMDS needs MinerU markdown (scanned PDF or "
+        return {"_error": "local NCMRD needs MinerU markdown (scanned PDF or "
                           "MinerU unavailable) — the local model cannot read PDFs"}
 
     # Gemini/local runs need no Anthropic client (nor its API key).
@@ -1639,7 +1639,7 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
 
         # PHASE 1 — one call establishes the record core + id namespaces (samples,
         # materials). The paper block is cached (1h TTL) so phase 2 rides the cache.
-        print(f"⤷ KMDS phase 1: core record + id namespaces ({model})...")
+        print(f"⤷ NCMRD phase 1: core record + id namespaces ({model})...")
         core_res = await extract_one_section(
             pdf_b64, PHASE1_KEY, client, blocks,
             section_schema=section_schemas.get(PHASE1_KEY), model=model,
@@ -1710,7 +1710,7 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         mode_note = ("sequential — free-tier TPM" if is_gemini
                      else "sequential — one local GPU" if is_local
                      else f"concurrent{f'; {n_light} on Haiku' if n_light else ''}")
-        print(f"⤷ KMDS phase 2: firing {len(phase2_keys)} focused section calls "
+        print(f"⤷ NCMRD phase 2: firing {len(phase2_keys)} focused section calls "
               f"({mode_note})...")
         p2_coros = (extract_one_section(pdf_b64, key, client, blocks,
                                         section_schema=section_schemas.get(key),
@@ -1803,7 +1803,7 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
             n_violations = len(viol)
             val_path = os.path.join(output_dir, f"{base_name}_validation.txt")
             with open(val_path, "w", encoding="utf-8") as f:
-                f.write(f"KMDS schema validation — {base_name}\n")
+                f.write(f"NCMRD schema validation — {base_name}\n")
                 f.write(f"schema: {os.path.basename(schema_path)}\n")
                 f.write(f"violations: {n_violations}\n\n")
                 f.write("\n".join(viol) if viol else "VALID — conforms to the schema.")
@@ -1844,7 +1844,7 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         if translate:
             tr_model = model if is_gemini else TRANSLATION_MODEL
             print(f"⤷ Translating EN → JA (1 call, {tr_model})...")
-            tr = await translate_kmds(merged, client, blocks["translation"],
+            tr = await translate_ncmrd(merged, client, blocks["translation"],
                                       model=tr_model)
         else:
             tr = {"ok": None, "skipped": True, "error": None, "ja": None,
@@ -1899,7 +1899,7 @@ async def extract_kmds_parallel(pdf_path: str, output_dir: str,
         "cache_creation_tokens": total_cc,
         "merge_warnings": warnings,
     }
-    print(f"   KMDS parallel done in {wall:.1f}s "
+    print(f"   NCMRD parallel done in {wall:.1f}s "
           f"(input {total_in:,} + output {total_out:,} tokens; "
           f"cache_read {total_cr:,}, cache_write {total_cc:,})")
     return summary

@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-extract_paper.py — End-to-end PDF -> KMDS + chart extractions.
+extract_paper.py — End-to-end PDF -> NCMRD + chart extractions.
 
 Pipeline:
   1. pdf_processor.py        -> metadata + figure crops + captions
-  2. Claude API + prompt     -> KMDS JSON (EN + JA)
+  2. Claude API + prompt     -> NCMRD JSON (EN + JA)
   3. LineFormer              -> per-figure raw line traces (pixel coords)
-  4. Output everything to <paper_name>_kmds/ ready for editing
+  4. Output everything to <paper_name>_ncmrd/ ready for editing
 
 Usage:
   python extract_paper.py paper.pdf
-  python extract_paper.py paper.pdf -o my_output/ --skip-kmds
+  python extract_paper.py paper.pdf -o my_output/ --skip-ncmrd
   python extract_paper.py paper.pdf --lf-model general_v2
 
 After running, open desktop_app.py on any figure to refine:
   python desktop_app.py
-  # then File > Open > <paper_name>_kmds/figures/figure_001.png
+  # then File > Open > <paper_name>_ncmrd/figures/figure_001.png
 """
 
 import os
@@ -44,7 +44,7 @@ except ImportError:
 
 
 # ===================================================================
-# Part 1: KMDS extraction via Claude API
+# Part 1: NCMRD extraction via Claude API
 # ===================================================================
 
 def _encode_pdf_b64(pdf_path: str) -> str:
@@ -52,7 +52,7 @@ def _encode_pdf_b64(pdf_path: str) -> str:
         return base64.standard_b64encode(f.read()).decode("utf-8")
 
 
-def extract_kmds_via_claude(pdf_path: str,
+def extract_ncmrd_via_claude(pdf_path: str,
                               prompt_path: str,
                               output_dir: str,
                               model: str = "claude-sonnet-4-6",
@@ -83,8 +83,8 @@ def extract_kmds_via_claude(pdf_path: str,
         + "\n\n---\n\n"
         + "IMPORTANT for this API run:\n"
         + "- Do NOT actually write out file attachments (your environment cannot).\n"
-        + "- Instead, output the English KMDS JSON inside a markdown code block "
-        + "labeled ```json_en, and the Japanese KMDS JSON inside ```json_ja.\n"
+        + "- Instead, output the English NCMRD JSON inside a markdown code block "
+        + "labeled ```json_en, and the Japanese NCMRD JSON inside ```json_ja.\n"
         + "- Then on a new line write '## Schema extension candidates' "
         + "and your candidates (or 'none').\n"
         + "- The base filename for both JSONs is: " + base_name + "\n"
@@ -245,26 +245,26 @@ def extract_charts(figure_entries: List,
 
 def main():
     p = argparse.ArgumentParser(
-        description="PDF -> KMDS JSON + AutoLineDigitizer chart data, end-to-end."
+        description="PDF -> NCMRD JSON + AutoLineDigitizer chart data, end-to-end."
     )
     p.add_argument("pdf", help="Path to paper PDF")
     p.add_argument("-o", "--output", default=None,
-                   help="Output dir (default: <pdf_name>_kmds/)")
+                   help="Output dir (default: <pdf_name>_ncmrd/)")
     p.add_argument("--prompt", default="extraction_prompt.md",
-                   help="Path to KMDS extraction prompt (default: ./extraction_prompt.md)")
-    p.add_argument("--kmds-model", default="claude-sonnet-4-6",
-                   help="Claude model for KMDS extraction")
-    p.add_argument("--kmds-parallel", action="store_true",
-                   help="Use parallel KMDS extraction (kmds_parallel.py: 5 focused "
+                   help="Path to NCMRD extraction prompt (default: ./extraction_prompt.md)")
+    p.add_argument("--ncmrd-model", default="claude-sonnet-4-6",
+                   help="Claude model for NCMRD extraction")
+    p.add_argument("--ncmrd-parallel", action="store_true",
+                   help="Use parallel NCMRD extraction (ncmrd_parallel.py: 5 focused "
                         "section calls + 1 translation) instead of the monolithic call")
     p.add_argument("--bbox-model", default="claude-sonnet-4-6",
                    help="Claude model for figure bbox detection in pdf_processor")
     p.add_argument("--lf-model", default="general_v2",
                    help="LineFormer model key (default: general_v2)")
-    p.add_argument("--skip-kmds", action="store_true",
-                   help="Skip KMDS extraction (only run pdf_processor + chart extraction)")
+    p.add_argument("--skip-ncmrd", action="store_true",
+                   help="Skip NCMRD extraction (only run pdf_processor + chart extraction)")
     p.add_argument("--skip-charts", action="store_true",
-                   help="Skip AutoLineDigitizer (only run pdf_processor + KMDS)")
+                   help="Skip AutoLineDigitizer (only run pdf_processor + NCMRD)")
     p.add_argument("--raster", action="store_true",
                    help="Use raster mode in pdf_processor (instead of page-render)")
     args = p.parse_args()
@@ -274,7 +274,7 @@ def main():
         sys.exit(1)
 
     base_name = Path(args.pdf).stem
-    output_dir = args.output or f"{base_name}_kmds"
+    output_dir = args.output or f"{base_name}_ncmrd"
     os.makedirs(output_dir, exist_ok=True)
 
     print("=" * 70)
@@ -293,24 +293,24 @@ def main():
         use_screener=True,
     )
 
-    # === STAGE 2: KMDS extraction ===
-    kmds_result = None
-    if not args.skip_kmds:
-        print("\n[STAGE 2] KMDS extraction (Claude + extraction_prompt.md)")
+    # === STAGE 2: NCMRD extraction ===
+    ncmrd_result = None
+    if not args.skip_ncmrd:
+        print("\n[STAGE 2] NCMRD extraction (Claude + extraction_prompt.md)")
         print("-" * 70)
-        if args.kmds_parallel:
-            import kmds_parallel
-            kmds_result = asyncio.run(kmds_parallel.extract_kmds_parallel(
+        if args.ncmrd_parallel:
+            import ncmrd_parallel
+            ncmrd_result = asyncio.run(ncmrd_parallel.extract_ncmrd_parallel(
                 args.pdf, output_dir, base_name=base_name, prompt_path=args.prompt,
-                model=args.kmds_model,
+                model=args.ncmrd_model,
             ))
         else:
-            kmds_result = extract_kmds_via_claude(
+            ncmrd_result = extract_ncmrd_via_claude(
                 args.pdf, args.prompt, output_dir,
-                model=args.kmds_model, base_name=base_name,
+                model=args.ncmrd_model, base_name=base_name,
             )
     else:
-        print("\n[STAGE 2] Skipped (--skip-kmds)")
+        print("\n[STAGE 2] Skipped (--skip-ncmrd)")
 
     # === STAGE 3: Chart extraction ===
     chart_results = None
@@ -330,7 +330,7 @@ def main():
         "output_dir": os.path.abspath(output_dir),
         "metadata": pkg.metadata,
         "n_figures": len(pkg.figures),
-        "kmds": kmds_result,
+        "ncmrd": ncmrd_result,
         "charts": chart_results,
     }
     summary_path = os.path.join(output_dir, "pipeline_summary.json")
@@ -343,10 +343,10 @@ def main():
     print("=" * 70)
     print(f"Output dir:  {output_dir}/")
     print(f"  • paper_manifest.json     -- figure metadata")
-    if kmds_result and kmds_result.get("en_path"):
-        print(f"  • {base_name}.json        -- KMDS English")
-    if kmds_result and kmds_result.get("ja_path"):
-        print(f"  • {base_name}_ja.json     -- KMDS Japanese")
+    if ncmrd_result and ncmrd_result.get("en_path"):
+        print(f"  • {base_name}.json        -- NCMRD English")
+    if ncmrd_result and ncmrd_result.get("ja_path"):
+        print(f"  • {base_name}_ja.json     -- NCMRD Japanese")
     print(f"  • figures/                -- cropped chart images")
     if chart_results:
         print(f"  • chart_extracts/         -- LineFormer traces (figure_NNN_lines.json)")

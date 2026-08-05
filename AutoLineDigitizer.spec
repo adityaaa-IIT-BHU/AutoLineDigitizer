@@ -56,15 +56,15 @@ a = Analysis(
         ('submodules/chartdete/configs', 'submodules/chartdete/configs'),
         # src module
         ('src/chartdete_infer.py', 'src'),
-        # KMDS prompt + schema (loaded at runtime relative to SCRIPT_DIR/_MEIPASS)
+        # NCMRD prompt + schema (loaded at runtime relative to SCRIPT_DIR/_MEIPASS)
         ('src/extraction_prompt.md', '.'),
-        ('src/kmds_v15.2.4_nullable.json', '.'),
-        # KMDS vocabulary extensions (kmds_vocab.py loads it next to the schema)
-        ('src/kmds_vocab_extensions.json', '.'),
+        ('src/ncmrd_v15.2.4_nullable.json', '.'),
+        # NCMRD vocabulary extensions (ncmrd_vocab.py loads it next to the schema)
+        ('src/ncmrd_vocab_extensions.json', '.'),
         # Starrydata2 uploader (loaded dynamically from SCRIPT_DIR/tools)
         ('tools/starrydata_upload.py', 'tools'),
         # Paper-record HTML viewer template
-        ('kmds_paper_viewer_claude.html', '.'),
+        ('ncmrd_paper_viewer_claude.html', '.'),
         # EasyOCR models (bundled for offline use)
         (os.path.join(spec_dir, 'easyocr_models'), 'easyocr_models'),
         # MinerU PP-DocLayoutV2 weights (default PDF figure detector).
@@ -90,7 +90,7 @@ a = Analysis(
         'terminaltables',
         'matplotlib',
         'pycocotools',
-        'kmds_editor',
+        'ncmrd_editor',
         'jsonschema',
         'app_settings',
     ] + distutils_imports + mmcv_imports + collect_submodules('mineru_layout')

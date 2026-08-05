@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""KMDS Foundry local backend, tested against a configurable fake Ollama.
+"""NCMRD Foundry local backend, tested against a configurable fake Ollama.
 Covers the review findings: dynamic num_ctx, silent-truncation guard,
 schema compaction, image/think 400-retries, OpenAI fallback, backfill
 type safety. No GPU, no network."""
@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import kmds_parallel as kp
+import ncmrd_parallel as kp
 import llm_backend
 
 

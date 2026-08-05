@@ -1,5 +1,5 @@
 # Run-from-source environment for the full AutoLineDigitizer pipeline
-# (PDF gallery + KMDS integration + Claude curation + Starrydata uploads).
+# (PDF gallery + NCMRD integration + Claude curation + Starrydata uploads).
 # Python 3.11. Versions are the tested combination.
 #
 # INSTALL ORDER MATTERS — torch first, then mmcv-full (compiles against it):
