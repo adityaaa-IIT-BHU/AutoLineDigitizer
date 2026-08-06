@@ -2576,6 +2576,10 @@ def main(page: ft.Page):
     def run_pdf_extraction(pdf_path):
         process_progress_ring.visible = True
         process_status_text.value = "Scanning PDF for figures..."
+        try:
+            _remember_folder(pdf_path)     # so the library finds it next launch
+        except Exception:  # noqa: BLE001
+            pass
         app.pdf_path = pdf_path
         app.pdf_figures = []
         app.current_figure_idx = None
@@ -2738,6 +2742,10 @@ def main(page: ft.Page):
         paths = [f.path for f in e.files if f.path.lower().endswith(".pdf")]
         if not paths:
             return
+        try:
+            _remember_folder(paths[0])   # this folder now holds a batch
+        except Exception:  # noqa: BLE001
+            pass
 
         # Closed-access safety: NEVER silently pick a backend — ask every
         # time whether AI stages (NCMRD + naming) run locally or on Claude.
@@ -2836,6 +2844,147 @@ def main(page: ft.Page):
                 "to review with the full toolbox, then upload.",
         on_click=lambda _: batch_picker.pick_files(
             allow_multiple=True, allowed_extensions=["pdf"]))
+
+    # ---- Library: every paper a batch has already processed -----------------
+    def _library_folders():
+        """Folders worth scanning for finished batches: everywhere a batch has
+        been run or a PDF opened, plus the folder of the current paper."""
+        try:
+            saved = json.loads(app_settings.get_setting("library_folders") or "[]")
+        except Exception:  # noqa: BLE001
+            saved = []
+        folders = [f for f in saved if isinstance(f, str)]
+        if app.pdf_path:
+            folders.append(os.path.dirname(os.path.abspath(app.pdf_path)))
+        out, seen = [], set()
+        for f in folders:
+            if f and f not in seen and os.path.isdir(f):
+                seen.add(f)
+                out.append(f)
+        return out
+
+    def _remember_folder(path):
+        """Record a folder so the library finds its papers next launch."""
+        folder = os.path.dirname(os.path.abspath(path))
+        try:
+            saved = json.loads(app_settings.get_setting("library_folders") or "[]")
+            if not isinstance(saved, list):
+                saved = []
+        except Exception:  # noqa: BLE001
+            saved = []
+        if folder not in saved:
+            saved.insert(0, folder)
+            app_settings.set_setting("library_folders",
+                                     json.dumps(saved[:20]))
+
+    def _scan_processed():
+        """Every {stem}_batch/digitizations.json we can find, newest first."""
+        found = []
+        for folder in _library_folders():
+            try:
+                names = sorted(os.listdir(folder))
+            except OSError:
+                continue
+            for name in names:
+                if not name.endswith("_batch"):
+                    continue
+                stem = name[:-len("_batch")]
+                state_path = os.path.join(folder, name, "digitizations.json")
+                pdf = os.path.join(folder, f"{stem}.pdf")
+                if not (os.path.exists(state_path) and os.path.exists(pdf)):
+                    continue               # still running, or PDF moved away
+                try:
+                    with open(state_path, encoding="utf-8") as f:
+                        state = json.load(f)
+                except Exception:  # noqa: BLE001
+                    continue
+                figs = state.get("figures") or {}
+                nc = os.path.join(folder, f"{stem}_ncmrd", f"{stem}.json")
+                if not os.path.exists(nc):
+                    nc = os.path.join(folder, f"{stem}_kmds", f"{stem}.json")
+                title = stem
+                if os.path.exists(nc):
+                    try:
+                        with open(nc, encoding="utf-8") as f:
+                            rec = json.load(f)
+                        title = (((rec.get("metadata") or {})
+                                  .get("publication") or {}).get("title")) or stem
+                    except Exception:  # noqa: BLE001
+                        pass
+                found.append({
+                    "pdf": pdf, "stem": stem, "title": title,
+                    "n_figs": len(figs),
+                    "n_points": sum(f.get("n_points", 0) for f in figs.values()),
+                    "n_named": sum(1 for f in figs.values()
+                                   if f.get("x_name") or f.get("y_name")),
+                    "has_record": os.path.exists(nc),
+                    "mtime": os.path.getmtime(state_path),
+                })
+        found.sort(key=lambda p: -p["mtime"])
+        return found
+
+    def on_library_click(_):
+        papers = _scan_processed()
+        if not papers:
+            process_status_text.value = (
+                "No processed papers yet — run “Batch digitize…” first.")
+            page.update()
+            return
+
+        def _open(pdf):
+            library_dlg.open = False
+            page.update()
+            page.run_thread(lambda: run_pdf_extraction(pdf))
+
+        rows = []
+        for p in papers:
+            # the two numbers that decide whether a paper still needs work
+            gaps = []
+            if not p["has_record"]:
+                gaps.append("no NCMRD record")
+            if p["n_figs"] and not p["n_named"]:
+                gaps.append("no axis names")
+            sub = (f"{p['n_figs']} figures · {p['n_points']:,} points"
+                   + (f" · {', '.join(gaps)}" if gaps else ""))
+            rows.append(ft.ListTile(
+                title=ft.Text(p["title"][:96], size=13,
+                              weight=ft.FontWeight.W_600),
+                subtitle=ft.Text(sub, size=11.5,
+                                 color=ERR if gaps else INK_3),
+                leading=ft.Icon(ft.icons.INSERT_CHART_OUTLINED,
+                                color=ACCENT if not gaps else INK_3),
+                dense=True,
+                on_click=(lambda _e, pdf=p["pdf"]: _open(pdf))))
+
+        total_f = sum(p["n_figs"] for p in papers)
+        total_p = sum(p["n_points"] for p in papers)
+        library_dlg = ft.AlertDialog(
+            title=ft.Text(f"Processed papers — {len(papers)} papers, "
+                          f"{total_f} figures, {total_p:,} points", size=15),
+            content=ft.Container(
+                width=720, height=460,
+                content=ft.Column([
+                    ft.Text("Click a paper to open it here with every figure "
+                            "restored and fully editable.",
+                            size=12, color=INK_3),
+                    ft.Divider(height=9),
+                    ft.Column(rows, scroll=ft.ScrollMode.AUTO, expand=True),
+                ])),
+            actions=[ft.TextButton(
+                "Close", on_click=lambda _: (setattr(library_dlg, "open", False),
+                                             page.update()))],
+            actions_alignment=ft.MainAxisAlignment.END)
+        page.dialog = library_dlg
+        library_dlg.open = True
+        page.update()
+
+    library_btn = ft.OutlinedButton(
+        "Processed papers…",
+        icon=ft.icons.LIBRARY_BOOKS_OUTLINED,
+        tooltip="Every paper a batch has already digitized: figure and point "
+                "counts, what is still missing, and one click to open any of "
+                "them here for review.",
+        on_click=on_library_click)
 
     def on_review_figures_click(_):
         if not (app.pdf_path and str(app.pdf_path).lower().endswith(".pdf")
@@ -4847,7 +4996,7 @@ def main(page: ft.Page):
 
     # One consistent pill silhouette across every action button; per-button
     # colors (e.g. the destructive Delete Line) are set at the constructor.
-    for _b in (upload_btn, open_pdf_btn, batch_btn, recrop_btn, delete_fig_btn, review_figures_btn, ncmrd_btn,
+    for _b in (upload_btn, open_pdf_btn, batch_btn, library_btn, recrop_btn, delete_fig_btn, review_figures_btn, ncmrd_btn,
                save_fig_btn, open_record_btn, sd3_upload_btn, export_sd_btn, export_wpd_btn,
                verify_btn, detect_markers_btn, axis_fix_btn, label_lines_btn,
                erase_btn, add_btn, apply_btn, done_btn, export_csv_btn,
@@ -4966,7 +5115,7 @@ def main(page: ft.Page):
 
     toolbar_card = _card(
         ft.Column([
-            ft.Row([upload_btn, open_pdf_btn, batch_btn,
+            ft.Row([upload_btn, open_pdf_btn, batch_btn, library_btn,
                     _vsep(),
                     pdf_detector_dropdown, review_figures_btn, recrop_btn, delete_fig_btn,
                     _vsep(),
