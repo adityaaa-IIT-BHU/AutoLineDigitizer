@@ -595,6 +595,29 @@ LOCAL_NUM_CTX = int(os.environ.get("ALD_LOCAL_NCMRD_NUM_CTX", "49152"))
 # How long the server may keep this model resident after our last request.
 # Short by default: text and vision models cannot co-exist on one 24 GB card.
 LOCAL_KEEP_ALIVE = os.environ.get("ALD_LOCAL_KEEP_ALIVE", "60s")
+
+# Highest context asked of each local model so far, so it is never RE-loaded
+# with a smaller one.
+_CTX_PIN: Dict[str, int] = {}
+
+
+def _pin_num_ctx(model: str, needed: int) -> int:
+    """Bucketed context that only ever grows, per model.
+
+    Changing num_ctx makes Ollama reload the model, and a reload throws away
+    the KV cache — including the paper prefix the other sections were about
+    to reuse. Sizing each section independently meant the sections with the
+    biggest schemas kept evicting the cache the small ones had just filled.
+    Growing to a high-water mark costs a little VRAM and buys one prefill.
+    """
+    buckets = [16384, 32768, 49152, 65536, 98304, 131072]
+    want = next((b for b in buckets if b >= needed and b <= LOCAL_NUM_CTX),
+                LOCAL_NUM_CTX)
+    pinned = _CTX_PIN.get(model, 0)
+    if want <= pinned:
+        return pinned
+    _CTX_PIN[model] = want
+    return want
 _CHARS_PER_TOKEN = 3.2          # conservative for scientific English + JSON
 
 
@@ -1281,12 +1304,7 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
                     f"{LOCAL_NUM_CTX} — raise ALD_LOCAL_NCMRD_NUM_CTX or "
                     f"shorten the paper")
             needed = int(est * 1.15) + mt + 512
-            # bucket num_ctx so consecutive calls reuse the loaded model
-            # instead of forcing an Ollama reload on every context change
-            buckets = [16384, 32768, 49152, 65536, 98304, 131072]
-            num_ctx = next((b for b in buckets
-                            if b >= needed and b <= LOCAL_NUM_CTX),
-                           LOCAL_NUM_CTX)
+            num_ctx = _pin_num_ctx(model, needed)
             g = await _local_generate(content, model[len(LOCAL_PREFIX):],
                                       mt, num_ctx=num_ctx)
             pec = g.pop("prompt_eval", 0)
