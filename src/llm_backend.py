@@ -41,6 +41,17 @@ except ImportError:          # standalone use outside the app
 _LOCAL_TIMEOUT = (10, 600)   # connect, read — a 32B model on one GPU is slow
 
 
+def _local_num_ctx():
+    """Context for interactive vision calls. Deliberately modest: the KV
+    cache dominates VRAM, and a chart image plus a short prompt needs far
+    less than the batch text stage."""
+    try:
+        return int(_cfg("ALD_LOCAL_VISION_NUM_CTX", "local_vision_num_ctx")
+                   or 8192)
+    except ValueError:
+        return 8192
+
+
 def _cfg(env_name, setting_name):
     return (os.environ.get(env_name) or get_setting(setting_name) or "").strip()
 
@@ -140,6 +151,9 @@ class LLMBackend:
         token = _cfg("ALD_LOCAL_LLM_KEY", "local_llm_key")
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        native = self._chat_ollama_native(system, blocks, max_tokens, headers)
+        if native is not None:
+            return native
         payload = {
             "model": self._local_model(headers),
             # thinking-style local models spend tokens reasoning before any
@@ -164,6 +178,77 @@ class LLMBackend:
         # its reasoning trace — better to salvage than to return nothing
         return content or message.get("reasoning") \
             or message.get("reasoning_content") or ""
+
+    def _chat_ollama_native(self, system, blocks, max_tokens, headers):
+        """Ollama's own /api/chat, which the OpenAI-compatible route can't
+        replace: only here can we set keep_alive and num_ctx.
+
+        That matters on a single-GPU box. A text model pinned at 48k context
+        fills a 24 GB card, and with a long server-side keep_alive every
+        later vision request fails with "model failed to load, this may be
+        due to resource limitations" — which silently strips axis names and
+        legend labels from a whole batch. Asking for a short keep_alive and a
+        modest context lets the models take turns instead.
+
+        Returns None when the server isn't Ollama, so the caller falls back.
+        """
+        import requests
+        base = local_url()
+        if base.endswith("/v1"):
+            base = base[:-3].rstrip("/")
+        text_parts, images = [], []
+        for b in blocks:
+            if b.get("type") == "text":
+                text_parts.append(b["text"])
+            elif b.get("type") == "image":
+                images.append(b["source"]["data"])
+            elif b.get("type") == "document":
+                raise ValueError(
+                    "PDF document blocks are Anthropic-only; the local "
+                    "backend takes MinerU markdown text instead.")
+        msg = {"role": "user", "content": "\n\n".join(text_parts)}
+        if images:
+            msg["images"] = images
+        payload = {
+            "model": self._local_model(headers),
+            "messages": [{"role": "system", "content": system}, msg],
+            "stream": False,
+            "think": False,
+            "keep_alive": _cfg("ALD_LOCAL_KEEP_ALIVE",
+                               "local_keep_alive") or "60s",
+            "options": {"num_predict": max(max_tokens * 2, 2048),
+                        "temperature": 0,
+                        "num_ctx": _local_num_ctx()},
+        }
+        try:
+            resp = requests.post(f"{base}/api/chat", json=payload,
+                                 headers=headers, timeout=_LOCAL_TIMEOUT,
+                                 verify=self.verify_ssl)
+            if resp.status_code == 400 and "think" in resp.text.lower():
+                payload.pop("think", None)     # model has no thinking switch
+                resp = requests.post(f"{base}/api/chat", json=payload,
+                                     headers=headers, timeout=_LOCAL_TIMEOUT,
+                                     verify=self.verify_ssl)
+            if resp.status_code == 404:        # not Ollama — use /v1
+                return None
+            if resp.status_code >= 500 and "failed to load" in resp.text:
+                # Retrying on /v1 would hit the same wall. Say what's wrong.
+                raise RuntimeError(
+                    "The local model server could not load the vision model — "
+                    "the GPU is already full (usually a text model pinned by a "
+                    "long keep_alive). Free it with 'ollama stop <model>' on "
+                    "the box, or lower ALD_LOCAL_NCMRD_NUM_CTX so both fit.")
+            resp.raise_for_status()
+        except requests.ConnectionError:
+            return None                        # not reachable — try /v1
+        except requests.Timeout:
+            raise
+        message = (resp.json() or {}).get("message") or {}
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "".join(p.get("text", "") for p in content
+                              if isinstance(p, dict))
+        return content or message.get("thinking") or ""
 
     def _local_model(self, headers):
         configured = _cfg("ALD_LOCAL_LLM_MODEL", "local_llm_model")

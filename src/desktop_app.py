@@ -1225,7 +1225,7 @@ def main(page: ft.Page):
     # PDF extraction strategy. AI page detection (render every page + Claude
     # bbox detection) is the high-quality default; uncheck for fast offline
     # raster-bitmap extraction (no API key, but misses vector figures).
-    _vlm_ok = VLM_SCREENER_AVAILABLE and VLM_SCREENER_SDK_AVAILABLE
+    _vlm_ok = VLM_SCREENER_AVAILABLE and VLM_SCREENER_BACKEND_READY()
     _detector_opts = []
     if MINERU_OK:
         _detector_opts.append(ft.dropdown.Option("mineru", "MinerU PP-DocLayoutV2 (best)"))
@@ -1252,7 +1252,7 @@ def main(page: ft.Page):
         tooltip="Re-run AI detection and the box-refinement agent on the open PDF: "
                 "tightens crops, drops non-charts, and splits merged panels. "
                 "Rebuilds the figure gallery."
-                if (VLM_SCREENER_AVAILABLE and VLM_SCREENER_SDK_AVAILABLE)
+                if (VLM_SCREENER_AVAILABLE and VLM_SCREENER_BACKEND_READY())
                 else "Needs ANTHROPIC_API_KEY + anthropic SDK.",
     )
 

@@ -592,6 +592,9 @@ LOCAL_PREFIX = "local:"
 # context CAP (prompt+output) for local calls; per-call num_ctx is computed
 # from the actual prompt size and only capped here. 49152 = glm's own pin.
 LOCAL_NUM_CTX = int(os.environ.get("ALD_LOCAL_NCMRD_NUM_CTX", "49152"))
+# How long the server may keep this model resident after our last request.
+# Short by default: text and vision models cannot co-exist on one 24 GB card.
+LOCAL_KEEP_ALIVE = os.environ.get("ALD_LOCAL_KEEP_ALIVE", "60s")
 _CHARS_PER_TOKEN = 3.2          # conservative for scientific English + JSON
 
 
@@ -714,6 +717,11 @@ async def _local_generate(content: List[Dict[str, Any]], model: str,
         msg["images"] = images
     payload: Dict[str, Any] = {
         "model": model, "messages": [msg], "stream": False, "think": False,
+        # One 24 GB card, and this model at 48k ctx fills it. A long server
+        # keep_alive pins it there, so the NEXT vision call ("model failed to
+        # load, resource limitations") and every interactive AI button die
+        # until it expires. Release it soon after we stop asking.
+        "keep_alive": LOCAL_KEEP_ALIVE,
         "options": {"num_predict": max_tokens, "temperature": 0,
                     "num_ctx": num_ctx or LOCAL_NUM_CTX},
     }
