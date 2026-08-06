@@ -36,9 +36,19 @@ _VLM = None
 
 def _vlm():
     """Local-model assistant (axis names, legend labels) — None when no
-    backend is configured; every use is best-effort."""
+    backend is configured; every use is best-effort.
+
+    ALD_NO_VLM_ASSIST=1 turns it off entirely. Worth doing when the served
+    vision model does not fit the GPU: a 32B VL model at 48k context wants
+    ~54 GB, so Ollama silently falls back to CPU, and the half-loaded model
+    then blocks the text model the NCMRD stage needs. Losing two best-effort
+    assists is far cheaper than stalling the whole batch.
+    """
     global _VLM
     if _VLM is None:
+        if os.environ.get("ALD_NO_VLM_ASSIST", "").strip() not in ("", "0"):
+            _VLM = False
+            return None
         try:
             from vlm_verifier import VLMVerifier, backend_available
             if backend_available():
