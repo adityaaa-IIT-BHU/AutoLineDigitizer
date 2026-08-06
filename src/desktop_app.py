@@ -111,11 +111,15 @@ except Exception as _pdf_err:
 
 # VLM screener for the page-render fallback (vector-only figures).
 try:
-    from vlm_screener import VLMScreener, ANTHROPIC_AVAILABLE as VLM_SCREENER_SDK_AVAILABLE
+    from vlm_screener import VLMScreener
+    # gate on the ACTIVE backend, not on the Anthropic SDK: a local-only
+    # install has no SDK yet screens perfectly well on the GPU
+    from llm_backend import backend_available as VLM_SCREENER_BACKEND_READY
     VLM_SCREENER_AVAILABLE = True
 except Exception as _scr_err:
     VLMScreener = None
-    VLM_SCREENER_SDK_AVAILABLE = False
+    def VLM_SCREENER_BACKEND_READY():
+        return False
     VLM_SCREENER_AVAILABLE = False
     print(f"VLM screener not available: {_scr_err}")
 
@@ -304,7 +308,7 @@ class LineFormerApp:
         self.fig_digitizations = {}
 
     def _vlm_screener_available(self):
-        return VLM_SCREENER_AVAILABLE and VLM_SCREENER_SDK_AVAILABLE
+        return VLM_SCREENER_AVAILABLE and VLM_SCREENER_BACKEND_READY()
 
     def extract_pdf_figures(self, pdf_path, prefer_vlm=True,
                             vlm_model="claude-haiku-4-5-20251001",
@@ -1080,6 +1084,30 @@ def image_to_base64(img):
     return base64.b64encode(buffer).decode('utf-8')
 
 
+def ai_name():
+    """Prose name of the ACTIVE AI backend ("the local GPU" / "Claude").
+
+    Status messages must never say "Claude" while the work is really running
+    on the lab GPU: on a closed-access paper that reads like the PDF was just
+    shipped to a cloud API. Resolved per call — the backend can be switched
+    mid-session from the batch dialog or Settings.
+    """
+    try:
+        from llm_backend import resolve_backend
+        return "the local GPU" if resolve_backend() == "local" else "Claude"
+    except Exception:  # noqa: BLE001
+        return "the AI backend"
+
+
+def ai_label():
+    """Same, as a capitalised prefix ("Local GPU" / "Claude")."""
+    try:
+        from llm_backend import resolve_backend
+        return "Local GPU" if resolve_backend() == "local" else "Claude"
+    except Exception:  # noqa: BLE001
+        return "AI"
+
+
 def main(page: ft.Page):
     # ---- Daylight-blue palette (light, StarryDigitizer-inspired accents) ----
     ACCENT = "#3B6FE0"      # cornflower blue — primary actions / accents
@@ -1204,7 +1232,7 @@ def main(page: ft.Page):
     if DOCLAYOUT_OK:
         _detector_opts.append(ft.dropdown.Option("doclayout", "DocLayout-YOLO (offline)"))
     if _vlm_ok:
-        _detector_opts.append(ft.dropdown.Option("vlm", "Claude VLM (per-panel)"))
+        _detector_opts.append(ft.dropdown.Option("vlm", "AI vision (per-panel)"))
     _detector_opts.append(ft.dropdown.Option("raster", "Embedded raster"))
     _default_detector = ("mineru" if MINERU_OK else
                          ("doclayout" if DOCLAYOUT_OK else ("vlm" if _vlm_ok else "raster")))
@@ -1214,7 +1242,7 @@ def main(page: ft.Page):
         options=_detector_opts,
         tooltip="How figures are located in the PDF. MinerU PP-DocLayoutV2: best — "
                 "separates charts from photos and splits composite panels (offline). "
-                "DocLayout-YOLO: whole figures (offline). Claude VLM: costs API. "
+                "DocLayout-YOLO: whole figures (offline). AI vision: uses the active backend. "
                 "Raster: embedded bitmaps only.",
     )
 
@@ -1392,8 +1420,9 @@ def main(page: ft.Page):
     y_axis_name_field = ft.TextField(label="Y axis name", value="", width=200, dense=True,
                                      hint_text="e.g. Voltage (V)")
     axis_claude_btn = ft.TextButton(
-        "✦ Ask Claude", tooltip="Have Claude read the figure and fill in the X/Y "
-        "axis property names + units — verify and edit before approving.")
+        "✦ Ask AI", tooltip="Have the ACTIVE backend (local GPU or Claude) read "
+        "the figure and fill in the X/Y axis property names + units — verify "
+        "and edit before approving.")
     # Per-axis verification (like the legend panel, but for axis PROPERTIES):
     # what the model detected → what NCMRD makes of it → editable → savable.
     ncmrd_x_text = ft.Text("", size=12, selectable=True)
@@ -1819,8 +1848,8 @@ def main(page: ft.Page):
             cur = (field_val or "").strip()
             if not cur:
                 if detected:
-                    return f"{label}: model detected “{detected}” — edit or ✦ Ask Claude", INK_3
-                return f"{label}: no axis property yet — type it or ✦ Ask Claude", INK_3
+                    return f"{label}: model detected “{detected}” — edit or ✦ Ask AI", INK_3
+                return f"{label}: no axis property yet — type it or ✦ Ask AI", INK_3
             det = f"  (detected: “{detected}”)" if detected and detected != cur else ""
             term = ncmrd_vocab.match(cur) if NCMRD_VOCAB_AVAILABLE else None
             if term:
@@ -1904,7 +1933,10 @@ def main(page: ft.Page):
                     e = by_name.get(name) or {}
                     _rq.post(f"{url.rstrip('/')}/api/v1/properties",
                              json={"name": name, "category": e.get("category") or "",
-                                   "unit": e.get("unit") or "", "added_by": "claude"},
+                                   "unit": e.get("unit") or "",
+                                   # who REALLY produced it: claude / local-llm
+                                   # / curator — never assume the cloud
+                                   "added_by": e.get("added_by") or "curator"},
                              headers={"X-API-Key": key}, timeout=10)
             except Exception as ex:  # noqa: BLE001
                 print(f"[vocab-grow] starrydata3 sync failed: {ex}")
@@ -1974,35 +2006,48 @@ def main(page: ft.Page):
             page.update()
             return
         axis_claude_btn.disabled = True
-        process_status_text.value = "✦ Asking Claude to identify the axis properties…"
+        try:
+            from llm_backend import resolve_backend
+            _who = ("the local GPU" if resolve_backend() == "local" else "Claude")
+        except Exception:  # noqa: BLE001
+            _who = "the AI backend"
+        process_status_text.value = f"✦ Asking {_who} to identify the axis properties…"
         page.update()
 
         def _work():
-            # each paper runs in its OWN subprocess: the UI process never
-            # loads batch models, and a pipeline crash can't kill the app
-            import subprocess
-            log = os.path.join(os.path.expanduser("~"), ".autolinedigitizer_batch.log")
-            done = 0
-            with open(log, "a", encoding="utf-8") as lf:
-                for i, pdf in enumerate(paths, 1):
+            try:
+                if app.vlm is None:
+                    app.vlm = VLMVerifier(verify_ssl=True)
+                ax = app.vlm.read_axis_properties(app.current_image) or {}
+
+                def _label(side):
+                    a = ax.get(side) or {}
+                    nm = (a.get("name") or "").strip()
+                    un = (a.get("unit") or "").strip()
+                    return f"{nm} ({un})" if nm and un else nm
+
+                xn, yn = _label("x_axis"), _label("y_axis")
+                if not (xn or yn):
+                    process_status_text.value = "No axis properties could be read."
+                else:
+                    if xn:
+                        x_axis_name_field.value = xn
+                    if yn:
+                        y_axis_name_field.value = yn
+                    # keep app state + the data table in step with the fields
+                    on_axis_name_change(None)
+                    note = (ax.get("notes") or "").strip()
                     process_status_text.value = (
-                        f"⚙ Batch {i}/{len(paths)}: {os.path.basename(pdf)} "
-                        f"(separate process — the app stays responsive)")
-                    page.update()
-                    r = subprocess.run(
-                        ["/usr/bin/caffeinate", "-is", sys.executable,
-                         os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                      "batch_run.py"),
-                         pdf] + (["--push", app_settings.get_setting("sd3_url").strip(),
-                                  "--push-key", app_settings.get_setting("sd3_key").strip()]
-                                 if (app_settings.get_setting("sd3_url") or "").strip() else []),
-                        stdout=lf, stderr=lf, env=os.environ.copy())
-                    if r.returncode == 0:
-                        done += 1
-            process_status_text.value = (
-                f"✅ Batch done: {done}/{len(paths)} paper(s). Open any of them "
-                f"— figures load pre-digitized. (log: ~/.autolinedigitizer_batch.log)")
-            page.update()
+                        f"Axis properties: X = {xn or '—'} | Y = {yn or '—'}"
+                        + (f" — {note}" if note else ""))[:200]
+            except Exception as ex:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                process_status_text.value = (
+                    f"Axis properties failed: {type(ex).__name__}: {ex}")
+            finally:
+                axis_claude_btn.disabled = False
+                page.update()
 
         page.run_thread(_work)
 
@@ -2266,7 +2311,7 @@ def main(page: ft.Page):
                                 and fidx not in getattr(app, "_vlm_alt_named", set())):
                             if not hasattr(app, "_vlm_alt_named"):
                                 app._vlm_alt_named = set()
-                            process_status_text.value = "Reading the secondary axes with Claude…"
+                            process_status_text.value = f"Reading the secondary axes with {ai_name()}…"
                             page.update()
                             notes2 = _claude_secondary_axes_sync()
                             if fidx is not None:
@@ -2287,7 +2332,7 @@ def main(page: ft.Page):
                         if can_vlm and fidx not in app._vlm_axes_read:
                             if app.vlm is None:
                                 app.vlm = VLMVerifier(verify_ssl=True)
-                            process_status_text.value = "Reading the axes with Claude…"
+                            process_status_text.value = f"Reading the axes with {ai_name()}…"
                             page.update()
                             res = app.vlm.read_axis_properties(app.current_image)
 
@@ -2327,7 +2372,7 @@ def main(page: ft.Page):
                                 import line_utils
                                 if app.vlm is None:
                                     app.vlm = VLMVerifier(verify_ssl=True)
-                                process_status_text.value = "Reading the legend with Claude…"
+                                process_status_text.value = f"Reading the legend with {ai_name()}…"
                                 page.update()
                                 colors = list(line_utils.get_distinct_colors(len(app.data_series)))
                                 names = app.vlm.label_lines_by_legend(
@@ -2547,7 +2592,7 @@ def main(page: ft.Page):
             elif phase == "doclayout":
                 process_status_text.value = f"Found {count} figure(s) via DocLayout-YOLO…"
             elif phase == "vlm-start":
-                process_status_text.value = ("Rendering pages and asking Claude to "
+                process_status_text.value = (f"Rendering pages and asking {ai_name()} to "
                                              "find charts (this can take a moment)…")
             elif phase == "vlm":
                 process_status_text.value = f"Found {count} chart(s) via AI page detection…"
@@ -3952,7 +3997,7 @@ def main(page: ft.Page):
                     skipped = "; ".join(str(s) for s in (export.get("skipped") or [])[:2])
                     process_status_text.value = ("Nothing uploadable — every graph was "
                         f"skipped ({skipped or 'no digitized graphs with real axis names'}). "
-                        "Verify the axis properties (✦ Ask Claude), then re-approve.")
+                        "Verify the axis properties (✦ Ask AI), then re-approve.")
                     return
                 client = TokenClient(token, base=base, dry_run=False)
                 try:
@@ -4205,7 +4250,7 @@ def main(page: ft.Page):
 
     verify_btn = ft.OutlinedButton(
         "Verify with AI", icon=ft.icons.AUTO_FIX_HIGH, disabled=True,
-        tooltip="Send current extraction to Claude to fix missing/stray points. Needs ANTHROPIC_API_KEY.",
+        tooltip="Send current extraction to the active AI backend (local GPU or Claude) to fix missing/stray points.",
     )
 
     detect_markers_btn = ft.OutlinedButton(
@@ -4224,7 +4269,7 @@ def main(page: ft.Page):
 
     alt_axes_btn = ft.OutlinedButton(
         "Detect all axes (AI)", icon=ft.icons.SWAP_VERT, disabled=True,
-        tooltip="Dual-axis figures: have Claude find and calibrate a RIGHT-hand "
+        tooltip="Dual-axis figures: have the active AI backend find and calibrate a RIGHT-hand "
                 "y-axis and/or TOP x-axis. Then assign each curve to its axis "
                 "with the Y1/Y2 (X1/X2) toggle in the lines list. "
                 "Needs ANTHROPIC_API_KEY.",
@@ -4238,21 +4283,21 @@ def main(page: ft.Page):
 
     axis_fix_btn = ft.OutlinedButton(
         "Fix Axis (AI)", icon=ft.icons.STRAIGHTEN, disabled=True,
-        tooltip="Use Claude to read the axis tick labels — including scientific "
+        tooltip="Use the active AI backend to read the axis tick labels — including scientific "
                 "notation (10^-4) and log scales — and recalibrate the axes. "
                 "Needs ANTHROPIC_API_KEY.",
     )
 
     label_lines_btn = ft.OutlinedButton(
         "Label Lines (AI)", icon=ft.icons.LABEL, disabled=True,
-        tooltip="Use Claude to read the chart legend and name each detected line "
+        tooltip="Use the active AI backend to read the chart legend and name each detected line "
                 "(which line is which series). Needs ANTHROPIC_API_KEY.",
     )
 
     def on_label_lines_click(_):
         if app.current_image is None or not app.data_series:
             return
-        process_status_text.value = "Reading the legend with Claude…"
+        process_status_text.value = f"Reading the legend with {ai_name()}…"
         process_progress_ring.visible = True
         page.update()
 
@@ -4463,7 +4508,7 @@ def main(page: ft.Page):
     def on_axis_fix_click(_):
         if app.current_image is None:
             return
-        process_status_text.value = "Reading axis ticks with Claude..."
+        process_status_text.value = f"Reading axis ticks with {ai_name()}..."
         process_progress_ring.visible = True
         page.update()
 
@@ -4507,7 +4552,7 @@ def main(page: ft.Page):
         app.add_anchors = []
         edit_panel.visible = False
         _hide_edit_subcontrols()
-        process_status_text.value = "Verifying with Claude (this can take ~10-30s)..."
+        process_status_text.value = f"Verifying with {ai_name()} (this can take ~10-30s)..."
         process_progress_ring.visible = True
         page.update()
 
@@ -4533,7 +4578,7 @@ def main(page: ft.Page):
                 info_text.value = (f"{len(app.data_series)} lines after AI verify ({total_points} points)\n"
                                    f"Points per line: {', '.join(map(str, line_pts))}")
                 if assessment:
-                    info_text.value += f"\nClaude: {assessment}"
+                    info_text.value += f"\n{ai_label()}: {assessment}"
                 populate_detected_lines()
                 update_data_table()
                 process_status_text.value = "AI verification complete."
@@ -4674,7 +4719,7 @@ def main(page: ft.Page):
                         import line_utils
                         if app.vlm is None:
                             app.vlm = VLMVerifier(verify_ssl=True)
-                        process_status_text.value = "Reading the legend with Claude…"
+                        process_status_text.value = f"Reading the legend with {ai_name()}…"
                         page.update()
                         colors = list(line_utils.get_distinct_colors(len(app.data_series)))
                         names = app.vlm.label_lines_by_legend(
@@ -4704,7 +4749,7 @@ def main(page: ft.Page):
                         need_names = any(not (v.get("name") or "").strip()
                                          for v in app.axis_alt.values())
                         if need_names and can_vlm:
-                            process_status_text.value = "Reading the secondary axes with Claude…"
+                            process_status_text.value = f"Reading the secondary axes with {ai_name()}…"
                             page.update()
                             _claude_secondary_axes_sync()
                         notes = _alt_axes_notes()

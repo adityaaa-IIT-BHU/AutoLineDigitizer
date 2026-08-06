@@ -33,7 +33,9 @@ import base64
 
 import cv2
 
-try:
+from llm_backend import LLMBackend, backend_available
+
+try:                          # kept for callers that still probe the SDK
     import anthropic
     ANTHROPIC_AVAILABLE = True
 except Exception:
@@ -96,19 +98,13 @@ def _strip_fences(text: str) -> str:
 class VLMScreener:
     """Vision-model screener that judges if a figure is worth extracting."""
 
-    def __init__(self, api_key=None, model=DEFAULT_MODEL, max_image_dim=1600):
-        if not ANTHROPIC_AVAILABLE:
-            raise RuntimeError(
-                "The 'anthropic' package is required for VLM screening.\n"
-                "Install it with:  pip install anthropic"
-            )
-        api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY environment variable is not set.\n"
-                "Set it with:  export ANTHROPIC_API_KEY='sk-ant-...'"
-            )
-        self.client = anthropic.Anthropic(api_key=api_key)
+    def __init__(self, api_key=None, model=DEFAULT_MODEL, max_image_dim=1600,
+                 backend=None):
+        # Screening ships PAGE IMAGES of the paper to a model, so it must obey
+        # the same backend switch as every other AI stage: in local mode the
+        # pages go to the GPU on the LAN and never leave the building.
+        self._backend = LLMBackend(backend=backend, api_key=api_key)
+        self.backend_name = self._backend.backend    # "anthropic" | "local"
         self.model = model
         self.max_image_dim = max_image_dim
 
@@ -149,30 +145,23 @@ class VLMScreener:
         }
         try:
             data_b64 = self._encode_image(img_bgr)
-            resp = self.client.messages.create(
+            raw = self._backend.chat(
                 model=self.model,
                 max_tokens=400,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": data_b64,
-                            },
+                system=("You screen scientific figures. You output ONLY a "
+                        "single JSON object — no markdown fences, no prose."),
+                blocks=[
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": data_b64,
                         },
-                        {"type": "text", "text": SCREEN_PROMPT},
-                    ],
-                }],
+                    },
+                    {"type": "text", "text": SCREEN_PROMPT},
+                ],
             )
-            # Concatenate any text blocks in the response.
-            text_parts = []
-            for block in resp.content:
-                if getattr(block, "type", None) == "text":
-                    text_parts.append(block.text)
-            raw = "".join(text_parts)
             cleaned = _strip_fences(raw)
             parsed = json.loads(cleaned)
             # Merge over the defaults so any missing keys keep sane values.
@@ -264,21 +253,18 @@ def _screen_page_method(self, page_img_bgr, model=None):
     result = {"n_charts": 0, "charts": [], "_model": model or self.model}
     try:
         data_b64 = self._encode_image(page_img_bgr)
-        resp = self.client.messages.create(
+        raw = self._backend.chat(
             model=model or self.model,
             max_tokens=1500,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {
-                        "type": "base64", "media_type": "image/png", "data": data_b64,
-                    }},
-                    {"type": "text", "text": PAGE_SCREEN_PROMPT},
-                ],
-            }],
+            system=("You locate charts on scientific pages. You output ONLY a "
+                    "single JSON object — no markdown fences, no prose."),
+            blocks=[
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": data_b64,
+                }},
+                {"type": "text", "text": PAGE_SCREEN_PROMPT},
+            ],
         )
-        text_parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
-        raw = "".join(text_parts)
         cleaned = _strip_fences(raw)
         parsed = json.loads(cleaned)
         if isinstance(parsed, dict):
@@ -418,21 +404,19 @@ def _refine_page_charts_method(self, page_img_bgr, candidate_charts, model=None)
 
     try:
         data_b64 = self._encode_image(annotated)
-        resp = self.client.messages.create(
+        raw = self._backend.chat(
             model=use_model,
             max_tokens=2000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {
-                        "type": "base64", "media_type": "image/png", "data": data_b64,
-                    }},
-                    {"type": "text",
-                     "text": REFINE_PAGE_PROMPT.format(n=len(candidate_charts))},
-                ],
-            }],
+            system=("You refine chart bounding boxes precisely. You output "
+                    "ONLY a single JSON object — no markdown fences, no prose."),
+            blocks=[
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": data_b64,
+                }},
+                {"type": "text",
+                 "text": REFINE_PAGE_PROMPT.format(n=len(candidate_charts))},
+            ],
         )
-        raw = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
         parsed = json.loads(_strip_fences(raw))
         if not isinstance(parsed, dict):
             return result
