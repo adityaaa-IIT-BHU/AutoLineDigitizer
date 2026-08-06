@@ -1215,13 +1215,34 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
         }
 
     tail += "Output the JSON in a single ```json code block and nothing else."
-    content = [
-        {"type": "text", "text": static_instruction,
-         "cache_control": {"type": "ephemeral", "ttl": "1h"}},  # stable across papers
-        paper_block,
-        *figure_blocks,
-        {"type": "text", "text": tail},
-    ]
+    instruction_block = {"type": "text", "text": static_instruction,
+                         # stable across papers
+                         "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+    if _is_local(model) and use_markdown:
+        # Ollama/llama.cpp reuse the KV cache only for a shared prompt PREFIX,
+        # and they ignore cache_control. With the per-section instruction
+        # first, every section starts with different tokens, so the same ~40k
+        # tokens of paper get re-processed 5 times — prefill, not generation,
+        # is what makes a local run slow (one section here spent 228s to emit
+        # 289 tokens). Paper first = one prefill, reused by later sections.
+        # Instructions last also reads better for the model: it sees the task
+        # right before answering.
+        content = [
+            paper_block,
+            *figure_blocks,
+            instruction_block,
+            {"type": "text", "text": tail},
+        ]
+    else:
+        content = [
+            instruction_block,
+            paper_block,
+            *figure_blocks,
+            {"type": "text", "text": tail},
+        ]
+    # where the instruction ended up — the over-budget path rewrites THIS
+    # block, and must never clobber the paper because the order changed
+    instr_idx = content.index(instruction_block)
 
     base = {"key": section_key, "fragment": None, "raw": None,
             "input_tokens": 0, "output_tokens": 0,
@@ -1248,7 +1269,7 @@ async def extract_one_section(pdf_b64: str, section_key: str, client,
                 print(f"   ⚠ {section_key}: ~{est//1000}k-token prompt over "
                       f"the {LOCAL_NUM_CTX//1024}k ctx cap — dropping the "
                       f"schema fragment (repair pass normalizes afterwards)")
-                content[0] = {**content[0], "text": static_no_schema +
+                content[instr_idx] = {**content[instr_idx], "text": static_no_schema +
                     "\n\n(No schema fragment fits this context — use exact "
                     "NCMRD field names; a schema-repair pass runs on your "
                     "output.)"}
